@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NUNI — Admin activation</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(135deg, #0a0e27 0%, #0E3D2C 100%);
+    color: #fff;
+    min-height: 100vh;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: rgba(20, 20, 30, 0.9);
+    border: 1px solid rgba(232, 199, 126, 0.25);
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 440px;
+    width: 100%;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #E8C77E; }
+  p.sub { color: #aaa; font-size: 13px; margin: 0 0 24px; }
+  label { display: block; font-size: 12.5px; color: #ccc; margin-bottom: 6px; margin-top: 16px; }
+  input, select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05);
+    color: #fff;
+    font-size: 14px;
+  }
+  input:focus, select:focus { outline: none; border-color: #E8C77E; }
+  button {
+    width: 100%;
+    margin-top: 24px;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #6E45A8 0%, #E8C77E 100%);
+    color: #1a1625;
+    font-weight: 700;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #feedback { margin-top: 16px; font-size: 13.5px; min-height: 20px; }
+  .success { color: #7FC79A; }
+  .error { color: #ff8080; }
+  .code-box {
+    margin-top: 12px;
+    text-align: center;
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 5px;
+    color: #E8C77E;
+    background: rgba(232, 199, 126, 0.08);
+    border: 1px dashed rgba(232, 199, 126, 0.4);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .hint { font-size: 11.5px; color: #888; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔑 Activer un abonnement NUNI</h1>
+    <p class="sub">À utiliser une fois le paiement Mobile Money confirmé sur WhatsApp.</p>
+
+    <label>Clé admin (secrète)</label>
+    <input type="password" id="adminKey" placeholder="Votre clé ADMIN_KEY">
+    <div class="hint">Enregistrée uniquement dans ce navigateur.</div>
+
+    <label>Email du client (utilisé à l'inscription)</label>
+    <input type="email" id="email" placeholder="client@exemple.com">
+
+    <label>Pass souscrit</label>
+    <select id="plan">
+      <option value="consumer">Pass Consommateur</option>
+      <option value="artist">Pass Artiste</option>
+    </select>
+
+    <label>Durée</label>
+    <select id="duration">
+      <option value="30">1 mois (30 jours)</option>
+      <option value="90" selected>1 trimestre (90 jours)</option>
+      <option value="365">1 an (365 jours)</option>
+    </select>
+
+    <button id="submitBtn" onclick="activate()">Activer et envoyer le code par email</button>
+    <div id="feedback"></div>
+    <div id="codeBox" style="display:none;" class="code-box"></div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    // Pré-remplit la clé admin si déjà enregistrée sur cet appareil
+    document.getElementById('adminKey').value = localStorage.getItem('nuniAdminKey') || '';
+
+    async function activate() {
+      const btn = document.getElementById('submitBtn');
+      const feedback = document.getElementById('feedback');
+      const codeBox = document.getElementById('codeBox');
+      codeBox.style.display = 'none';
+      feedback.className = '';
+      feedback.textContent = '';
+
+      const adminKey = document.getElementById('adminKey').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const plan = document.getElementById('plan').value;
+      const durationDays = Number(document.getElementById('duration').value);
+
+      if (!adminKey || !email) {
+        feedback.className = 'error';
+        feedback.textContent = 'Veuillez remplir la clé admin et l\'email du client.';
+        return;
+      }
+
+      localStorage.setItem('nuniAdminKey', adminKey);
+      btn.disabled = true;
+      feedback.textContent = 'Activation en cours…';
+
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/activate-by-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+          body: JSON.stringify({ email, plan, durationDays }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          feedback.className = 'error';
+          feedback.textContent = '❌ ' + (data.error || 'Erreur inconnue.');
+          btn.disabled = false;
+          return;
+        }
+
+        feedback.className = 'success';
+        feedback.textContent = data.emailSent
+          ? '✅ Abonnement activé — code envoyé par email à ' + data.sentTo
+          : '✅ Abonnement activé (email non envoyé : vérifiez la config EMAIL_USER/EMAIL_APP_PASSWORD).';
+
+        codeBox.style.display = 'block';
+        codeBox.textContent = data.access_code;
+      } catch (e) {
+        feedback.className = 'error';
+        feedback.textContent = '❌ Impossible de contacter le serveur.';
+      }
+      btn.disabled = false;
+    }
+  </script>
+</body>
+</html>

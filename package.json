@@ -1,0 +1,23 @@
+{
+  "name": "nuni-backend",
+  "version": "0.3.0",
+  "description": "Backend réel de NUNI — authentification, abonnements, code d'accès par email, musique et clips",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^6.9.16"
+  }
+}
