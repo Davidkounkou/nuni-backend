@@ -56,7 +56,7 @@ const insertPayment = db.prepare(`
 // Pour une durée non listée exactement, le prix est calculé au prorata du tarif à 90 jours,
 // pour ne jamais tomber sur un montant à 0 FCFA par erreur.
 const PRICE_TABLE = {
-  consumer: { 30: 650, 90: 1000, 365: 3500 },
+  consumer: { 30: 650, 90: 650, 365: 1500 },
   artist:   { 90: 5000, 365: 10000 },
 };
 function basePriceFor(plan, durationDays) {
