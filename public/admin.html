@@ -2,160 +2,206 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NUNI — Admin activation</title>
+<title>NUNI — Tableau de bord admin</title>
 <style>
   * { box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: linear-gradient(135deg, #0a0e27 0%, #0E3D2C 100%);
-    color: #fff;
-    min-height: 100vh;
-    margin: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-  }
-  .card {
-    background: rgba(20, 20, 30, 0.9);
-    border: 1px solid rgba(232, 199, 126, 0.25);
-    border-radius: 16px;
-    padding: 32px;
-    max-width: 440px;
-    width: 100%;
-  }
-  h1 { font-size: 20px; margin: 0 0 4px; color: #E8C77E; }
-  p.sub { color: #aaa; font-size: 13px; margin: 0 0 24px; }
-  label { display: block; font-size: 12.5px; color: #ccc; margin-bottom: 6px; margin-top: 16px; }
-  input, select {
-    width: 100%;
-    padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid rgba(255,255,255,0.15);
-    background: rgba(255,255,255,0.05);
-    color: #fff;
-    font-size: 14px;
-  }
-  input:focus, select:focus { outline: none; border-color: #E8C77E; }
-  button {
-    width: 100%;
-    margin-top: 24px;
-    padding: 12px;
-    border: none;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #6E45A8 0%, #E8C77E 100%);
-    color: #1a1625;
-    font-weight: 700;
-    font-size: 15px;
-    cursor: pointer;
-  }
-  button:disabled { opacity: 0.6; cursor: not-allowed; }
-  #feedback { margin-top: 16px; font-size: 13.5px; min-height: 20px; }
-  .success { color: #7FC79A; }
-  .error { color: #ff8080; }
-  .code-box {
-    margin-top: 12px;
-    text-align: center;
-    font-size: 26px;
-    font-weight: 800;
-    letter-spacing: 5px;
-    color: #E8C77E;
-    background: rgba(232, 199, 126, 0.08);
-    border: 1px dashed rgba(232, 199, 126, 0.4);
-    border-radius: 10px;
-    padding: 14px;
-  }
-  .hint { font-size: 11.5px; color: #888; margin-top: 4px; }
+  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#0A0A10; color:#EDEDED; max-width:900px; margin:0 auto; padding:30px 20px 80px;}
+  h1{color:#D4AF6A; font-size:22px; margin-bottom:4px;}
+  .subtitle{color:#888; font-size:13px; margin-bottom:24px;}
+  label{font-size:13px; color:#999; display:block; margin-top:10px;}
+  input, select{width:100%; padding:10px; margin:6px 0 4px; border-radius:8px; border:1px solid #292940; background:#151520; color:#fff; box-sizing:border-box; font-size:14px;}
+  button{padding:9px 18px; border-radius:20px; border:none; font-weight:700; cursor:pointer; font-size:13px;}
+  .tabs{display:flex; gap:8px; margin:20px 0 24px; flex-wrap:wrap; border-bottom:1px solid #23233a; padding-bottom:14px;}
+  .tab-btn{background:#151520; color:#999; border:1px solid #292940; border-radius:20px; padding:8px 16px;}
+  .tab-btn.active{background:linear-gradient(135deg,#D4AF6A,#8E63C9); color:#141220; border-color:transparent;}
+  .pane{display:none;}
+  .pane.active{display:block;}
+  .card{background:#141420; border:1px solid #23233a; border-radius:12px; padding:16px; margin-bottom:12px;}
+  .row{display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;}
+  .muted{color:#888; font-size:12.5px;}
+  .approve{background:#1E8449; color:#fff;}
+  .reject{background:#7a2020; color:#fff;}
+  .primary{background:linear-gradient(135deg,#D4AF6A,#8E63C9); color:#141220;}
+  .secondary{background:#7a5c20; color:#fff;}
+  .msg{font-size:13px; margin-top:10px; padding:8px 12px; border-radius:8px;}
+  .msg.ok{background:rgba(30,132,73,0.2); color:#7ee6a8;}
+  .msg.err{background:rgba(122,32,32,0.25); color:#f29a9a;}
+  table{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:10px;}
+  th, td{padding:8px; text-align:left; border-bottom:1px solid #23233a;}
+  th{color:#D4AF6A; font-weight:700;}
+  .pill{display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:700;}
+  .pill.artist{background:rgba(212,175,106,0.18); color:#D4AF6A;}
+  .pill.consumer{background:rgba(110,69,168,0.2); color:#b79bea;}
+  .pill.verified{background:rgba(30,132,73,0.2); color:#7ee6a8;}
+  .cover-thumb{width:44px; height:44px; border-radius:6px; background-size:cover; background-position:center; background-color:#222;}
 </style>
 </head>
 <body>
-  <div class="card">
-    <h1>🔑 Activer un abonnement NUNI</h1>
-    <p class="sub">À utiliser une fois le paiement Mobile Money confirmé sur WhatsApp.</p>
+  <h1>🛠️ NUNI — Tableau de bord admin</h1>
+  <div class="subtitle">Un seul endroit pour tout gérer : Pass, certifications, morceaux, utilisateurs.</div>
 
-    <label>Clé admin (secrète)</label>
-    <input type="password" id="adminKey" placeholder="Votre clé ADMIN_KEY">
-    <div class="hint">Enregistrée uniquement dans ce navigateur.</div>
+  <label>Clé admin (secrète)</label>
+  <input id="key" type="password" placeholder="Votre clé admin">
 
-    <label>Email du client (utilisé à l'inscription)</label>
-    <input type="email" id="email" placeholder="client@exemple.com">
-
-    <label>Pass souscrit</label>
-    <select id="plan">
-      <option value="consumer">Pass Consommateur</option>
-      <option value="artist">Pass Artiste</option>
-    </select>
-
-    <label>Durée</label>
-    <select id="duration">
-      <option value="30">1 mois (30 jours)</option>
-      <option value="90" selected>1 trimestre (90 jours)</option>
-      <option value="365">1 an (365 jours)</option>
-    </select>
-
-    <button id="submitBtn" onclick="activate()">Activer et envoyer le code par email</button>
-    <div id="feedback"></div>
-    <div id="codeBox" style="display:none;" class="code-box"></div>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="activate">💳 Activer un Pass</button>
+    <button class="tab-btn" data-tab="cert">🏅 Certifications</button>
+    <button class="tab-btn" data-tab="tracks">🎵 Morceaux</button>
+    <button class="tab-btn" data-tab="users">👥 Utilisateurs</button>
   </div>
 
-  <script>
-    const API_BASE = window.location.origin;
+  <!-- ONGLET 1 : ACTIVER UN PASS -->
+  <div class="pane active" id="pane-activate">
+    <div class="card">
+      <label>Email du client (utilisé à l'inscription)</label>
+      <input id="act-email" type="text" placeholder="email@exemple.com">
+      <label>Pass souscrit</label>
+      <select id="act-plan"><option value="consumer">Pass Consommateur</option><option value="artist">Pass Artiste</option></select>
+      <label>Durée</label>
+      <select id="act-duration">
+        <option value="30">1 mois (30 jours)</option>
+        <option value="90" selected>3 mois (90 jours)</option>
+        <option value="365">1 an (365 jours)</option>
+      </select>
+      <button class="primary" style="margin-top:14px; width:100%;" onclick="activate()">Activer et envoyer le code par email</button>
+      <div id="act-msg"></div>
+    </div>
+  </div>
 
-    // Pré-remplit la clé admin si déjà enregistrée sur cet appareil
-    document.getElementById('adminKey').value = localStorage.getItem('nuniAdminKey') || '';
+  <!-- ONGLET 2 : CERTIFICATIONS -->
+  <div class="pane" id="pane-cert">
+    <button class="secondary" onclick="loadPending()">Charger les demandes en attente</button>
+    <div id="cert-list" style="margin-top:14px;"></div>
+    <div class="card" style="margin-top:20px;">
+      <b style="color:#D4AF6A; font-size:13px;">🧹 Réinitialiser une certification (comptes de test)</b>
+      <label>Email du compte à réinitialiser</label>
+      <input id="reset-email" type="text" placeholder="email@exemple.com">
+      <button class="secondary" style="margin-top:10px;" onclick="resetCert()">Réinitialiser</button>
+    </div>
+  </div>
 
-    async function activate() {
-      const btn = document.getElementById('submitBtn');
-      const feedback = document.getElementById('feedback');
-      const codeBox = document.getElementById('codeBox');
-      codeBox.style.display = 'none';
-      feedback.className = '';
-      feedback.textContent = '';
+  <!-- ONGLET 3 : MORCEAUX -->
+  <div class="pane" id="pane-tracks">
+    <button class="secondary" onclick="loadTracks()">Charger les morceaux publiés</button>
+    <div id="tracks-list" style="margin-top:14px;"></div>
+  </div>
 
-      const adminKey = document.getElementById('adminKey').value.trim();
-      const email = document.getElementById('email').value.trim();
-      const plan = document.getElementById('plan').value;
-      const durationDays = Number(document.getElementById('duration').value);
+  <!-- ONGLET 4 : UTILISATEURS -->
+  <div class="pane" id="pane-users">
+    <button class="secondary" onclick="loadUsers()">Charger les utilisateurs</button>
+    <div id="users-list" style="margin-top:14px;"></div>
+  </div>
 
-      if (!adminKey || !email) {
-        feedback.className = 'error';
-        feedback.textContent = 'Veuillez remplir la clé admin et l\'email du client.';
-        return;
-      }
+<script>
+  function getKey(){ const k = document.getElementById('key').value; localStorage.setItem('nuniAdminKey', k); return k; }
 
-      localStorage.setItem('nuniAdminKey', adminKey);
-      btn.disabled = true;
-      feedback.textContent = 'Activation en cours…';
+  document.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.onclick = ()=>{
+      document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.pane').forEach(p=>p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('pane-'+btn.dataset.tab).classList.add('active');
+    };
+  });
 
-      try {
-        const res = await fetch(`${API_BASE}/api/admin/activate-by-email`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
-          body: JSON.stringify({ email, plan, durationDays }),
-        });
-        const data = await res.json();
+  async function activate(){
+    const email = document.getElementById('act-email').value;
+    const plan = document.getElementById('act-plan').value;
+    const durationDays = document.getElementById('act-duration').value;
+    const msg = document.getElementById('act-msg');
+    msg.innerHTML = '<div class="msg">Activation en cours…</div>';
+    try{
+      const res = await fetch('/api/admin/activate-by-email', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
+        body: JSON.stringify({ email, plan, durationDays: Number(durationDays) })
+      });
+      const data = await res.json();
+      if(!res.ok){ msg.innerHTML = '<div class="msg err">❌ '+(data.error||'Erreur')+'</div>'; return; }
+      msg.innerHTML = '<div class="msg ok">✅ '+data.message+'</div><div class="card" style="text-align:center; font-size:22px; letter-spacing:4px; font-weight:700; color:#D4AF6A;">'+data.access_code+'</div>';
+    }catch(e){ msg.innerHTML = '<div class="msg err">❌ Impossible de contacter le serveur.</div>'; }
+  }
 
-        if (!res.ok) {
-          feedback.className = 'error';
-          feedback.textContent = '❌ ' + (data.error || 'Erreur inconnue.');
-          btn.disabled = false;
-          return;
-        }
+  async function loadPending(){
+    const list = document.getElementById('cert-list');
+    list.innerHTML = 'Chargement…';
+    try{
+      const res = await fetch('/api/admin/verification/pending', { headers:{'x-admin-key':getKey()} });
+      const data = await res.json();
+      if(!res.ok){ list.innerHTML = '<div class="msg err">❌ '+(data.error||'Erreur')+'</div>'; return; }
+      if(!data.pending.length){ list.innerHTML = '<p class="muted">Aucune demande en attente.</p>'; return; }
+      list.innerHTML = '';
+      data.pending.forEach(u=>{
+        const card = document.createElement('div');
+        card.className = 'card row';
+        card.innerHTML = '<div><b>'+(u.artist_name||u.first_name)+'</b><br><span class="muted">'+u.email+'</span></div><div><button class="approve">Certifier</button> <button class="reject">Refuser</button></div>';
+        card.querySelector('.approve').onclick = ()=> decide(u.email, true);
+        card.querySelector('.reject').onclick = ()=> decide(u.email, false);
+        list.appendChild(card);
+      });
+    }catch(e){ list.innerHTML = '<div class="msg err">❌ Impossible de contacter le serveur.</div>'; }
+  }
 
-        feedback.className = 'success';
-        feedback.textContent = data.emailSent
-          ? '✅ Abonnement activé — code envoyé par email à ' + data.sentTo
-          : '✅ Abonnement activé (email non envoyé : vérifiez la config EMAIL_USER/EMAIL_APP_PASSWORD).';
+  async function decide(email, approve){
+    try{
+      const res = await fetch('/api/admin/verification/decide', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
+        body: JSON.stringify({ email, approve })
+      });
+      const data = await res.json();
+      alert(data.message || data.error);
+      loadPending();
+    }catch(e){ alert('Erreur de connexion au serveur.'); }
+  }
 
-        codeBox.style.display = 'block';
-        codeBox.textContent = data.access_code;
-      } catch (e) {
-        feedback.className = 'error';
-        feedback.textContent = '❌ Impossible de contacter le serveur.';
-      }
-      btn.disabled = false;
-    }
-  </script>
+  async function resetCert(){
+    const email = document.getElementById('reset-email').value;
+    try{
+      const res = await fetch('/api/admin/verification/reset', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      alert(data.message || data.error);
+    }catch(e){ alert('Erreur de connexion au serveur.'); }
+  }
+
+  async function loadTracks(){
+    const list = document.getElementById('tracks-list');
+    list.innerHTML = 'Chargement…';
+    try{
+      const res = await fetch('/api/tracks');
+      const data = await res.json();
+      if(!data.tracks || !data.tracks.length){ list.innerHTML = '<p class="muted">Aucun morceau publié pour le moment.</p>'; return; }
+      let html = '<table><tr><th></th><th>Titre</th><th>Artiste</th><th>Type</th><th>Genre</th><th>Publié le</th></tr>';
+      data.tracks.forEach(t=>{
+        const cover = t.cover_url ? '<div class="cover-thumb" style="background-image:url('+t.cover_url+')"></div>' : '<div class="cover-thumb"></div>';
+        html += '<tr><td>'+cover+'</td><td>'+t.title+'</td><td>'+(t.artist_name||'—')+(t.is_verified?' <span class="pill verified">✓</span>':'')+'</td><td>'+(t.release_type||'Single')+'</td><td>'+(t.genre||'—')+'</td><td>'+new Date(t.created_at).toLocaleDateString('fr-FR')+'</td></tr>';
+      });
+      html += '</table>';
+      list.innerHTML = html;
+    }catch(e){ list.innerHTML = '<div class="msg err">❌ Impossible de contacter le serveur.</div>'; }
+  }
+
+  async function loadUsers(){
+    const list = document.getElementById('users-list');
+    list.innerHTML = 'Chargement…';
+    try{
+      const res = await fetch('/api/admin/users', { headers:{'x-admin-key':getKey()} });
+      const data = await res.json();
+      if(!res.ok){ list.innerHTML = '<div class="msg err">❌ '+(data.error||'Erreur')+'</div>'; return; }
+      let html = '<table><tr><th>Nom</th><th>Email</th><th>Type</th><th>Pass</th><th>Statut</th><th>Sons</th><th>Abonnés</th><th>Inscrit le</th></tr>';
+      data.users.forEach(u=>{
+        const name = u.account_type === 'artist' ? (u.artist_name || u.first_name) : (u.first_name+' '+u.last_name);
+        const typePill = u.account_type === 'artist' ? '<span class="pill artist">Artiste</span>' : '<span class="pill consumer">Consommateur</span>';
+        const verified = u.is_verified ? ' <span class="pill verified">✓</span>' : '';
+        html += '<tr><td>'+name+verified+'</td><td>'+u.email+'</td><td>'+typePill+'</td><td>'+(u.plan||'—')+'</td><td>'+(u.subscription_status||'—')+'</td><td>'+(u.track_count!=null?u.track_count:'—')+'</td><td>'+(u.follower_count!=null?u.follower_count:'—')+'</td><td>'+new Date(u.created_at).toLocaleDateString('fr-FR')+'</td></tr>';
+      });
+      html += '</table>';
+      list.innerHTML = html;
+    }catch(e){ list.innerHTML = '<div class="msg err">❌ Impossible de contacter le serveur.</div>'; }
+  }
+
+  window.addEventListener('load', ()=>{ const k = localStorage.getItem('nuniAdminKey'); if(k) document.getElementById('key').value = k; });
+</script>
 </body>
 </html>

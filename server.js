@@ -95,7 +95,7 @@ app.post('/api/register', async (req, res) => {
   res.status(201).json({
     message: 'Compte créé. Choisissez maintenant votre Pass pour continuer sur WhatsApp.',
     token,
-    user: publicUser(user),
+    user: publicUser(withArtistStats(user)),
   });
 });
 
@@ -107,14 +107,14 @@ app.post('/api/login', async (req, res) => {
   const ok = await verifyPassword(password || '', user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
   const token = signToken(user);
-  res.json({ token, user: publicUser(user) });
+  res.json({ token, user: publicUser(withArtistStats(user)) });
 });
 
 // Profil courant
 app.get('/api/me', authMiddleware, (req, res) => {
   const user = findUserById.get(req.user.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable.' });
-  res.json({ user: publicUser(user) });
+  res.json({ user: publicUser(withArtistStats(user)) });
 });
 
 // ================= ABONNEMENT =================
@@ -201,7 +201,7 @@ app.post('/api/subscribe/redeem', authMiddleware, (req, res) => {
   if (String(code).toUpperCase() !== user.access_code) {
     return res.status(400).json({ error: 'Code invalide.' });
   }
-  res.json({ message: 'Accès débloqué — bienvenue sur NUNI en intégralité 🕊️', user: publicUser(findUserById.get(user.id)) });
+  res.json({ message: 'Accès débloqué — bienvenue sur NUNI en intégralité 🕊️', user: publicUser(withArtistStats(findUserById.get(user.id))) });
 });
 
 // ================= MUSIQUE & CLIPS (artiste) =================
@@ -235,12 +235,31 @@ app.post('/api/clips', authMiddleware, (req, res) => {
 app.get('/api/tracks', (req, res) => {
   const rows = db.prepare(`
     SELECT t.id, t.title, t.album, t.genre, t.release_type, t.cover_url, t.audio_url,
-           t.streams, t.likes, t.created_at, u.artist_name, u.is_verified
+           t.streams, t.likes, t.created_at, u.id as artist_id, u.artist_name, u.is_verified
     FROM tracks t JOIN users u ON u.id = t.artist_id
     WHERE t.published = 1 AND (t.scheduled_release_at IS NULL OR t.scheduled_release_at <= datetime('now'))
     ORDER BY t.created_at DESC
   `).all();
   res.json({ tracks: rows });
+});
+
+// Suivre / ne plus suivre un vrai artiste (compte réel)
+app.post('/api/follow', authMiddleware, (req, res) => {
+  const { artistId } = req.body;
+  const artist = findUserById.get(artistId);
+  if (!artist || artist.account_type !== 'artist') return res.status(404).json({ error: 'Artiste introuvable.' });
+  if (artist.id === req.user.id) return res.status(400).json({ error: 'Vous ne pouvez pas vous suivre vous-même.' });
+  const existing = db.prepare(`SELECT * FROM follows WHERE follower_id = ? AND artist_id = ?`).get(req.user.id, artist.id);
+  let following;
+  if (existing) {
+    db.prepare(`DELETE FROM follows WHERE follower_id = ? AND artist_id = ?`).run(req.user.id, artist.id);
+    following = false;
+  } else {
+    db.prepare(`INSERT INTO follows (follower_id, artist_id) VALUES (?, ?)`).run(req.user.id, artist.id);
+    following = true;
+  }
+  const followersCount = db.prepare(`SELECT COUNT(*) as c FROM follows WHERE artist_id = ?`).get(artist.id).c;
+  res.json({ following, followersCount });
 });
 
 // Liste publique des clips publiés (aléatoire, tous artistes confondus)
@@ -263,11 +282,33 @@ app.post('/api/verification/request', authMiddleware, (req, res) => {
   if (user.account_type !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
   if (user.is_verified) return res.status(400).json({ error: 'Ce compte est déjà certifié.' });
   if (user.verification_status === 'pending') return res.status(400).json({ error: 'Une demande est déjà en attente.' });
+  const stats = withArtistStats(user);
+  const MIN_TRACKS = 50;
+  const MIN_FOLLOWERS = 5000;
+  if (stats.track_count < MIN_TRACKS || stats.follower_count < MIN_FOLLOWERS) {
+    return res.status(403).json({
+      error: `Conditions non remplies : ${stats.track_count}/${MIN_TRACKS} sons publiés, ${stats.follower_count}/${MIN_FOLLOWERS} abonnés.`,
+    });
+  }
   db.prepare(`UPDATE users SET verification_status = 'pending' WHERE id = ?`).run(user.id);
   res.json({ message: 'Demande de certification envoyée — en attente de validation NUNI.' });
 });
 
 // Liste des demandes en attente (admin)
+// Liste de tous les utilisateurs inscrits (admin)
+app.get('/api/admin/users', (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const rows = db.prepare(`
+    SELECT u.id, u.account_type, u.first_name, u.last_name, u.email, u.artist_name,
+           u.plan, u.subscription_status, u.is_verified, u.verification_status, u.created_at,
+           (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = u.id AND t.published = 1) as track_count,
+           (SELECT COUNT(*) FROM follows f WHERE f.artist_id = u.id) as follower_count
+    FROM users u
+    ORDER BY u.created_at DESC
+  `).all();
+  res.json({ users: rows });
+});
+
 app.get('/api/admin/verification/pending', (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const rows = db.prepare(`
@@ -306,76 +347,20 @@ app.post('/api/admin/verification/reset', (req, res) => {
   res.json({ message: `Certification réinitialisée pour ${user.artist_name || user.first_name}.` });
 });
 
-// Petite page web pour valider les certifications sans ligne de commande
+// Ancienne page de certification — redirige vers le nouveau tableau de bord unique
 app.get('/admin-verify.html', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><title>NUNI — Certifications</title>
-<style>
-  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#0A0A10; color:#EDEDED; max-width:640px; margin:40px auto; padding:0 20px;}
-  h1{color:#D4AF6A;} input{width:100%; padding:10px; margin:6px 0 16px; border-radius:8px; border:1px solid #333; background:#151520; color:#fff; box-sizing:border-box;}
-  .req{background:#141420; border:1px solid #292940; border-radius:10px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; gap:12px;}
-  button{padding:8px 16px; border-radius:20px; border:none; font-weight:700; cursor:pointer;}
-  .approve{background:#1E8449; color:#fff;} .reject{background:#7a2020; color:#fff;}
-  label{font-size:13px; color:#999;}
-</style></head>
-<body>
-  <h1>🏅 Certifications NUNI — demandes en attente</h1>
-  <label>Clé admin (secrète)</label>
-  <input id="key" type="password" placeholder="Votre clé admin">
-  <button onclick="load()" style="background:#D4AF6A; color:#141220; margin-bottom:20px;">Charger les demandes</button>
-  <div id="list"></div>
-  <hr style="border-color:#292940; margin:30px 0;">
-  <h3 style="color:#D4AF6A; font-size:15px;">🧹 Réinitialiser une certification (comptes de test)</h3>
-  <label>Email du compte à réinitialiser</label>
-  <input id="resetEmail" type="text" placeholder="email@exemple.com">
-  <button onclick="resetCert()" style="background:#7a5c20; color:#fff;">Réinitialiser</button>
-  <script>
-    async function load(){
-      const key = document.getElementById('key').value;
-      localStorage.setItem('nuniAdminKey', key);
-      const res = await fetch('/api/admin/verification/pending', { headers:{'x-admin-key': key} });
-      const data = await res.json();
-      const list = document.getElementById('list');
-      if(!res.ok){ list.innerHTML = '<p style="color:#e77">'+(data.error||'Erreur')+'</p>'; return; }
-      if(!data.pending.length){ list.innerHTML = '<p>Aucune demande en attente.</p>'; return; }
-      list.innerHTML = '';
-      data.pending.forEach(u=>{
-        const row = document.createElement('div');
-        row.className = 'req';
-        row.innerHTML = '<div><b>'+(u.artist_name||u.first_name)+'</b><br><span style="color:#999; font-size:13px;">'+u.email+'</span></div><div><button class="approve">Certifier</button> <button class="reject">Refuser</button></div>';
-        row.querySelector('.approve').onclick = ()=> decide(u.email, true);
-        row.querySelector('.reject').onclick = ()=> decide(u.email, false);
-        list.appendChild(row);
-      });
-    }
-    async function decide(email, approve){
-      const key = document.getElementById('key').value;
-      const res = await fetch('/api/admin/verification/decide', {
-        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':key},
-        body: JSON.stringify({ email, approve })
-      });
-      const data = await res.json();
-      alert(data.message || data.error);
-      load();
-    }
-    async function resetCert(){
-      const key = document.getElementById('key').value;
-      const email = document.getElementById('resetEmail').value;
-      const res = await fetch('/api/admin/verification/reset', {
-        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':key},
-        body: JSON.stringify({ email })
-      });
-      const data = await res.json();
-      alert(data.message || data.error);
-    }
-    window.addEventListener('load', ()=>{ const k = localStorage.getItem('nuniAdminKey'); if(k) document.getElementById('key').value = k; });
-  </script>
-</body></html>`);
+  res.redirect('/admin.html');
 });
 
 function publicUser(u) {
   const { password_hash, ...safe } = u;
   return safe;
+}
+function withArtistStats(u) {
+  if (u.account_type !== 'artist') return u;
+  const trackCount = db.prepare(`SELECT COUNT(*) as c FROM tracks WHERE artist_id = ? AND published = 1`).get(u.id).c;
+  const followerCount = db.prepare(`SELECT COUNT(*) as c FROM follows WHERE artist_id = ?`).get(u.id).c;
+  return { ...u, track_count: trackCount, follower_count: followerCount };
 }
 
 // ---------- Publication planifiée : job qui "sort" les titres/clips programmés ----------

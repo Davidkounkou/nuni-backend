@@ -71,6 +71,14 @@ db.exec(`
     expires_at TEXT,
     active INTEGER DEFAULT 1
   );
+
+  CREATE TABLE IF NOT EXISTS follows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    follower_id INTEGER NOT NULL REFERENCES users(id),
+    artist_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(follower_id, artist_id)
+  );
 `);
 
 // Migration : ajoute la colonne de statut de certification si elle n'existe pas encore
