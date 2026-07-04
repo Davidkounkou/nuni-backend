@@ -30,8 +30,7 @@ const activateSubscription = db.prepare(`
       plan = @plan,
       subscription_started_at = datetime('now'),
       subscription_expires_at = datetime('now', @duration),
-      access_code = @access_code,
-      is_verified = CASE WHEN account_type = 'artist' THEN 1 ELSE is_verified END
+      access_code = @access_code
   WHERE id = @id
 `);
 const insertTrack = db.prepare(`
@@ -295,6 +294,18 @@ app.post('/api/admin/verification/decide', (req, res) => {
   }
 });
 
+// Réinitialise la certification d'un compte (utile pour nettoyer les anciens comptes de test
+// certifiés automatiquement avant la mise en place du vrai système de validation manuelle).
+app.post('/api/admin/verification/reset', (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const { email } = req.body;
+  if (!isEmail(email)) return res.status(400).json({ error: 'Email invalide.' });
+  const user = findUserByEmail.get(email);
+  if (!user) return res.status(404).json({ error: "Aucun compte NUNI n'existe avec cet email." });
+  db.prepare(`UPDATE users SET is_verified = 0, verification_status = 'none' WHERE id = ?`).run(user.id);
+  res.json({ message: `Certification réinitialisée pour ${user.artist_name || user.first_name}.` });
+});
+
 // Petite page web pour valider les certifications sans ligne de commande
 app.get('/admin-verify.html', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -313,6 +324,11 @@ app.get('/admin-verify.html', (req, res) => {
   <input id="key" type="password" placeholder="Votre clé admin">
   <button onclick="load()" style="background:#D4AF6A; color:#141220; margin-bottom:20px;">Charger les demandes</button>
   <div id="list"></div>
+  <hr style="border-color:#292940; margin:30px 0;">
+  <h3 style="color:#D4AF6A; font-size:15px;">🧹 Réinitialiser une certification (comptes de test)</h3>
+  <label>Email du compte à réinitialiser</label>
+  <input id="resetEmail" type="text" placeholder="email@exemple.com">
+  <button onclick="resetCert()" style="background:#7a5c20; color:#fff;">Réinitialiser</button>
   <script>
     async function load(){
       const key = document.getElementById('key').value;
@@ -341,6 +357,16 @@ app.get('/admin-verify.html', (req, res) => {
       const data = await res.json();
       alert(data.message || data.error);
       load();
+    }
+    async function resetCert(){
+      const key = document.getElementById('key').value;
+      const email = document.getElementById('resetEmail').value;
+      const res = await fetch('/api/admin/verification/reset', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':key},
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      alert(data.message || data.error);
     }
     window.addEventListener('load', ()=>{ const k = localStorage.getItem('nuniAdminKey'); if(k) document.getElementById('key').value = k; });
   </script>
