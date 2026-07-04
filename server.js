@@ -255,6 +255,98 @@ app.get('/api/clips', (req, res) => {
   res.json({ clips: rows });
 });
 
+// ================= CERTIFICATION ARTISTE =================
+
+// L'artiste demande sa certification (badge vérifié)
+app.post('/api/verification/request', authMiddleware, (req, res) => {
+  const user = findUserById.get(req.user.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  if (user.account_type !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  if (user.is_verified) return res.status(400).json({ error: 'Ce compte est déjà certifié.' });
+  if (user.verification_status === 'pending') return res.status(400).json({ error: 'Une demande est déjà en attente.' });
+  db.prepare(`UPDATE users SET verification_status = 'pending' WHERE id = ?`).run(user.id);
+  res.json({ message: 'Demande de certification envoyée — en attente de validation NUNI.' });
+});
+
+// Liste des demandes en attente (admin)
+app.get('/api/admin/verification/pending', (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const rows = db.prepare(`
+    SELECT id, first_name, last_name, email, artist_name, created_at
+    FROM users WHERE account_type = 'artist' AND verification_status = 'pending'
+    ORDER BY created_at ASC
+  `).all();
+  res.json({ pending: rows });
+});
+
+// Approuve ou refuse une demande (admin)
+app.post('/api/admin/verification/decide', (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const { email, approve } = req.body;
+  if (!isEmail(email)) return res.status(400).json({ error: 'Email invalide.' });
+  const user = findUserByEmail.get(email);
+  if (!user) return res.status(404).json({ error: "Aucun compte NUNI n'existe avec cet email." });
+  if (approve) {
+    db.prepare(`UPDATE users SET verification_status = 'approved', is_verified = 1 WHERE id = ?`).run(user.id);
+    res.json({ message: `${user.artist_name || user.first_name} est maintenant certifié(e). 🏅` });
+  } else {
+    db.prepare(`UPDATE users SET verification_status = 'rejected' WHERE id = ?`).run(user.id);
+    res.json({ message: `Demande de ${user.artist_name || user.first_name} refusée.` });
+  }
+});
+
+// Petite page web pour valider les certifications sans ligne de commande
+app.get('/admin-verify.html', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><title>NUNI — Certifications</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#0A0A10; color:#EDEDED; max-width:640px; margin:40px auto; padding:0 20px;}
+  h1{color:#D4AF6A;} input{width:100%; padding:10px; margin:6px 0 16px; border-radius:8px; border:1px solid #333; background:#151520; color:#fff; box-sizing:border-box;}
+  .req{background:#141420; border:1px solid #292940; border-radius:10px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; gap:12px;}
+  button{padding:8px 16px; border-radius:20px; border:none; font-weight:700; cursor:pointer;}
+  .approve{background:#1E8449; color:#fff;} .reject{background:#7a2020; color:#fff;}
+  label{font-size:13px; color:#999;}
+</style></head>
+<body>
+  <h1>🏅 Certifications NUNI — demandes en attente</h1>
+  <label>Clé admin (secrète)</label>
+  <input id="key" type="password" placeholder="Votre clé admin">
+  <button onclick="load()" style="background:#D4AF6A; color:#141220; margin-bottom:20px;">Charger les demandes</button>
+  <div id="list"></div>
+  <script>
+    async function load(){
+      const key = document.getElementById('key').value;
+      localStorage.setItem('nuniAdminKey', key);
+      const res = await fetch('/api/admin/verification/pending', { headers:{'x-admin-key': key} });
+      const data = await res.json();
+      const list = document.getElementById('list');
+      if(!res.ok){ list.innerHTML = '<p style="color:#e77">'+(data.error||'Erreur')+'</p>'; return; }
+      if(!data.pending.length){ list.innerHTML = '<p>Aucune demande en attente.</p>'; return; }
+      list.innerHTML = '';
+      data.pending.forEach(u=>{
+        const row = document.createElement('div');
+        row.className = 'req';
+        row.innerHTML = '<div><b>'+(u.artist_name||u.first_name)+'</b><br><span style="color:#999; font-size:13px;">'+u.email+'</span></div><div><button class="approve">Certifier</button> <button class="reject">Refuser</button></div>';
+        row.querySelector('.approve').onclick = ()=> decide(u.email, true);
+        row.querySelector('.reject').onclick = ()=> decide(u.email, false);
+        list.appendChild(row);
+      });
+    }
+    async function decide(email, approve){
+      const key = document.getElementById('key').value;
+      const res = await fetch('/api/admin/verification/decide', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':key},
+        body: JSON.stringify({ email, approve })
+      });
+      const data = await res.json();
+      alert(data.message || data.error);
+      load();
+    }
+    window.addEventListener('load', ()=>{ const k = localStorage.getItem('nuniAdminKey'); if(k) document.getElementById('key').value = k; });
+  </script>
+</body></html>`);
+});
+
 function publicUser(u) {
   const { password_hash, ...safe } = u;
   return safe;

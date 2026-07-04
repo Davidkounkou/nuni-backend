@@ -73,4 +73,11 @@ db.exec(`
   );
 `);
 
+// Migration : ajoute la colonne de statut de certification si elle n'existe pas encore
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN verification_status TEXT DEFAULT 'none'`);
+} catch (e) {
+  // La colonne existe déjà — rien à faire.
+}
+
 module.exports = db;
