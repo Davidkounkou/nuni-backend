@@ -5,7 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const db = require('./db');
 const {
-  hashPassword, verifyPassword, signToken, generateAccessCode, authMiddleware,
+  hashPassword, verifyPassword, signToken, verifyToken, generateAccessCode, authMiddleware,
 } = require('./auth');
 const { sendAccessCodeEmail } = require('./mailer');
 
@@ -320,6 +320,73 @@ app.get('/api/tracks', (req, res) => {
     ORDER BY t.created_at DESC
   `).all();
   res.json({ tracks: rows });
+});
+
+// Prix du système de streaming NUNI : chaque écoute réelle génère 2 FCFA,
+// répartis 75% pour l'artiste et 25% pour NUNI (l'éditeur).
+const NUNI_PRICE_PER_STREAM_FCFA = 2;
+const NUNI_ARTIST_SHARE_PCT = 75;
+
+const findExistingPlay = db.prepare('SELECT id FROM plays WHERE track_id = ? AND listener_id = ?');
+
+// Enregistre une vraie écoute — mais compte UNE SEULE FOIS par auditeur et par morceau.
+// Réécouter 10 ou 1000 fois ne fait jamais grimper le compteur au-delà de la première fois.
+// Une écoute non connectée n'est jamais comptée (impossible de garantir l'unicité sans identité,
+// et ça éviterait les abus faciles). L'artiste qui écoute son propre morceau n'est pas compté non plus.
+app.post('/api/tracks/:id/play', (req, res) => {
+  const trackId = Number(req.params.id);
+  const track = db.prepare('SELECT id, artist_id, streams FROM tracks WHERE id = ?').get(trackId);
+  if (!track) return res.status(404).json({ error: 'Morceau introuvable.' });
+
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  const listenerId = payload ? payload.id : null;
+
+  if (!listenerId) {
+    return res.json({ counted: false, reason: 'Connectez-vous pour que votre écoute soit comptée.', streams: track.streams });
+  }
+  if (listenerId === track.artist_id) {
+    return res.json({ counted: false, reason: "Une écoute de son propre morceau n'est pas comptée.", streams: track.streams });
+  }
+  if (findExistingPlay.get(trackId, listenerId)) {
+    return res.json({ counted: false, reason: 'Déjà compté lors de votre première écoute de ce morceau.', streams: track.streams });
+  }
+
+  db.prepare('INSERT INTO plays (track_id, listener_id) VALUES (?, ?)').run(trackId, listenerId);
+  db.prepare('UPDATE tracks SET streams = streams + 1 WHERE id = ?').run(trackId);
+  res.json({ counted: true, streams: track.streams + 1 });
+});
+
+// Statistiques réelles de revenus pour le tableau de bord de l'artiste connecté
+app.get('/api/artist/stats', authMiddleware, (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(streams), 0) as total_streams
+    FROM tracks WHERE artist_id = ?
+  `).get(req.user.id);
+
+  const totalStreams = row.total_streams;
+  const grossFcfa = totalStreams * NUNI_PRICE_PER_STREAM_FCFA;
+  const artistShareFcfa = Math.round(grossFcfa * NUNI_ARTIST_SHARE_PCT / 100);
+  const platformShareFcfa = grossFcfa - artistShareFcfa;
+
+  // Streams des 30 derniers jours, pour la tendance affichée sur le tableau de bord
+  const recent = db.prepare(`
+    SELECT COUNT(*) as n FROM plays p
+    JOIN tracks t ON t.id = p.track_id
+    WHERE t.artist_id = ? AND p.created_at >= datetime('now', '-30 days')
+  `).get(req.user.id);
+
+  res.json({
+    total_streams: totalStreams,
+    streams_last_30_days: recent.n,
+    gross_fcfa: grossFcfa,
+    artist_share_fcfa: artistShareFcfa,
+    platform_share_fcfa: platformShareFcfa,
+    price_per_stream_fcfa: NUNI_PRICE_PER_STREAM_FCFA,
+    artist_share_pct: NUNI_ARTIST_SHARE_PCT,
+  });
 });
 
 // Suivre / ne plus suivre un vrai artiste (compte réel)
