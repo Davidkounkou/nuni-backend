@@ -323,6 +323,16 @@ app.post('/api/clips', authMiddleware, h(async (req, res) => {
   res.status(201).json({ id: inserted.id, scheduled: isFuture });
 }));
 
+// ---------- Statistique publique — vrai nombre de comptes avec un Pass actif ----------
+// Remplace l'ancien compteur de démo qui s'incrémentait aléatoirement depuis un chiffre
+// inventé. Ici c'est une vraie requête sur la base : nombre de comptes (Consommateur +
+// Artiste confondus) dont le Pass est actuellement actif.
+app.get('/api/stats/public', h(async (req, res) => {
+  await enforceSubscriptionExpiry();
+  const row = await db.get(`SELECT COUNT(*)::int as c FROM users WHERE subscription_status = 'active'`);
+  res.json({ active_users: row.c });
+}));
+
 app.get('/api/tracks', h(async (req, res) => {
   const rows = await db.query(`
     SELECT t.id, t.title, t.album, t.genre, t.release_type, t.cover_url, t.audio_url, t.lyrics,
