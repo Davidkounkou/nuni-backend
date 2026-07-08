@@ -306,7 +306,6 @@ app.put('/api/artist/momo', authMiddleware, h(async (req, res) => {
 // jamais envoyé au serveur — perdu au rechargement, et jamais visible sur la vraie page
 // artiste (qui affichait toujours les initiales, sans jamais vérifier une vraie photo).
 app.put('/api/artist/avatar', authMiddleware, h(async (req, res) => {
-  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
   const { avatarUrl } = req.body;
   if (!avatarUrl || !String(avatarUrl).startsWith('http')) return res.status(400).json({ error: 'URL de photo invalide.' });
   await db.run('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarUrl, req.user.id]);
