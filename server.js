@@ -422,6 +422,20 @@ app.get('/api/artist/payments-history', authMiddleware, h(async (req, res) => {
   res.json({ history });
 }));
 
+// ---------- Suppression d'un morceau — nécessaire pour corriger une publication en double ----------
+app.delete('/api/tracks/:id', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const trackId = Number(req.params.id);
+  const track = await db.get('SELECT id, artist_id FROM tracks WHERE id = $1', [trackId]);
+  if (!track) return res.status(404).json({ error: 'Morceau introuvable.' });
+  if (track.artist_id !== req.user.id) return res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres morceaux.' });
+  await db.run('DELETE FROM plays WHERE track_id = $1', [trackId]);
+  await db.run('DELETE FROM track_likes WHERE track_id = $1', [trackId]);
+  await db.run('DELETE FROM featured_tracks WHERE track_id = $1', [trackId]);
+  await db.run('DELETE FROM tracks WHERE id = $1', [trackId]);
+  res.json({ message: 'Morceau supprimé.' });
+}));
+
 app.post('/api/tracks', authMiddleware, h(async (req, res) => {
   if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
   const {
