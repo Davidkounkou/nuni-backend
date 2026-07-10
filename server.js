@@ -344,6 +344,59 @@ app.get('/api/artist/:id/support-info', h(async (req, res) => {
   });
 }));
 
+// ---------- Sons en vedette — sélectionnés par l'artiste pour sa biographie ----------
+// L'artiste choisit, parmi ses propres morceaux déjà publiés sur la plateforme, jusqu'à 6
+// à mettre en avant juste sous sa biographie. Visible par tout le monde sur sa page publique.
+const MAX_FEATURED_TRACKS = 6;
+
+app.put('/api/artist/featured-tracks', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const { trackIds } = req.body;
+  if (!Array.isArray(trackIds)) return res.status(400).json({ error: 'Liste de morceaux invalide.' });
+  const ids = [...new Set(trackIds.map(Number).filter(Boolean))].slice(0, MAX_FEATURED_TRACKS);
+
+  // Vérifie que chaque morceau appartient bien à cet artiste — impossible de mettre en
+  // vedette le morceau de quelqu'un d'autre.
+  if (ids.length) {
+    const owned = await db.query('SELECT id FROM tracks WHERE id = ANY($1::int[]) AND artist_id = $2', [ids, req.user.id]);
+    const ownedIds = new Set(owned.map((r) => r.id));
+    if (ids.some((id) => !ownedIds.has(id))) {
+      return res.status(403).json({ error: 'Vous ne pouvez mettre en vedette que vos propres morceaux.' });
+    }
+  }
+
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM featured_tracks WHERE artist_id = $1', [req.user.id]);
+    for (let i = 0; i < ids.length; i++) {
+      await client.query('INSERT INTO featured_tracks (artist_id, track_id, position) VALUES ($1,$2,$3)', [req.user.id, ids[i], i]);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  res.json({ message: 'Sélection mise à jour.', count: ids.length });
+}));
+
+app.get('/api/artist/:id/featured-tracks', h(async (req, res) => {
+  const artistId = Number(req.params.id);
+  const rows = await db.query(`
+    SELECT t.id, t.title, t.album, t.genre, t.release_type, t.cover_url, t.audio_url,
+           t.streams, t.likes, u.artist_name, u.is_verified
+    FROM featured_tracks f
+    JOIN tracks t ON t.id = f.track_id
+    JOIN users u ON u.id = t.artist_id
+    WHERE f.artist_id = $1
+    ORDER BY f.position ASC
+  `, [artistId]);
+  res.json({ tracks: rows });
+}));
+
 // ---------- Historique des paiements — calculé en direct depuis les vraies écoutes ----------
 // Avant : deux lignes ("Mai 2026", "Juin 2026") codées en dur, identiques pour tout le monde.
 // Maintenant : regroupement réel des écoutes (table plays) par mois, pour les morceaux de

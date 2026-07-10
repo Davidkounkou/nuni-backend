@@ -179,6 +179,20 @@ async function initSchema() {
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS studio TEXT;`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS description TEXT;`);
   await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS release_date TIMESTAMPTZ;`);
+
+  // ---------- Sons en vedette — sélectionnés par l'artiste pour sa biographie ----------
+  // L'artiste choisit, parmi ses propres morceaux déjà publiés, jusqu'à 6 à mettre en avant
+  // juste sous sa biographie, visibles par tout le monde sur sa page publique.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS featured_tracks (
+      id SERIAL PRIMARY KEY,
+      artist_id INTEGER NOT NULL REFERENCES users(id),
+      track_id INTEGER NOT NULL REFERENCES tracks(id),
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(artist_id, track_id)
+    );
+  `);
 }
 
 module.exports = { pool, query, get, run, initSchema };
