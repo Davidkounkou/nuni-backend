@@ -312,13 +312,24 @@ app.put('/api/artist/avatar', authMiddleware, h(async (req, res) => {
   res.json({ message: 'Photo de profil mise à jour.', avatar_url: avatarUrl });
 }));
 
+// ---------- Vraie photo de couverture (bannière) artiste — même principe que l'avatar ----------
+// Avant : "Changer la photo de couverture" ne faisait qu'un aperçu local dans le navigateur,
+// jamais envoyé au serveur — perdu au rechargement, jamais visible pour les autres visiteurs.
+app.put('/api/artist/banner', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const { bannerUrl } = req.body;
+  if (!bannerUrl || !String(bannerUrl).startsWith('http')) return res.status(400).json({ error: 'URL de photo invalide.' });
+  await db.run('UPDATE users SET banner_url = $1 WHERE id = $2', [bannerUrl, req.user.id]);
+  res.json({ message: 'Photo de couverture mise à jour.', banner_url: bannerUrl });
+}));
+
 app.get('/api/artist/:id/public-stats', h(async (req, res) => {
   const artistId = Number(req.params.id);
-  const artist = await db.get('SELECT id, account_type, avatar_url FROM users WHERE id = $1', [artistId]);
+  const artist = await db.get('SELECT id, account_type, avatar_url, banner_url FROM users WHERE id = $1', [artistId]);
   if (!artist || artist.account_type !== 'artist') return res.status(404).json({ error: 'Artiste introuvable.' });
   const followerCount = (await db.get('SELECT COUNT(*)::int as c FROM follows WHERE artist_id = $1', [artistId])).c;
   const trackCount = (await db.get('SELECT COUNT(*)::int as c FROM tracks WHERE artist_id = $1 AND published = 1', [artistId])).c;
-  res.json({ follower_count: followerCount, track_count: trackCount, avatar_url: artist.avatar_url || null });
+  res.json({ follower_count: followerCount, track_count: trackCount, avatar_url: artist.avatar_url || null, banner_url: artist.banner_url || null });
 }));
 
 app.get('/api/artist/:id/support-info', h(async (req, res) => {

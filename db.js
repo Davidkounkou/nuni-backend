@@ -164,6 +164,7 @@ async function initSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status TEXT DEFAULT 'active';`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS momo_number TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_url TEXT;`);
   await pool.query(`UPDATE users SET account_status = 'active' WHERE account_status IS NULL;`);
 
   // ---------- Crédits réels du morceau ----------
