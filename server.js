@@ -415,6 +415,21 @@ app.get('/api/artist/:id/scheduled-releases', h(async (req, res) => {
   res.json({ releases: rows });
 }));
 
+// Version authentifiée — utilisée sur SA PROPRE page pour éviter toute dépendance à un ID
+// recalculé côté client (currentArtistPageRealId), qui pouvait dans certains cas retomber
+// sur un mauvais identifiant. Ici, req.user.id vient directement du token de connexion.
+app.get('/api/artist/scheduled-releases', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const rows = await db.query(`
+    SELECT id, title, release_type, scheduled_release_at
+    FROM tracks
+    WHERE artist_id = $1 AND published = 0 AND scheduled_release_at IS NOT NULL
+    ORDER BY scheduled_release_at ASC
+    LIMIT 20
+  `, [req.user.id]);
+  res.json({ releases: rows });
+}));
+
 // ---------- Historique des paiements — calculé en direct depuis les vraies écoutes ----------
 // Avant : deux lignes ("Mai 2026", "Juin 2026") codées en dur, identiques pour tout le monde.
 // Maintenant : regroupement réel des écoutes (table plays) par mois, pour les morceaux de
