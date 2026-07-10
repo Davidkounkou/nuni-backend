@@ -423,6 +423,7 @@ app.get('/api/tracks', h(async (req, res) => {
 
 const NUNI_PRICE_PER_STREAM_FCFA = 2;
 const NUNI_ARTIST_SHARE_PCT = 75;
+const MONTH_LABELS_FR = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];
 
 app.post('/api/tracks/:id/play', h(async (req, res) => {
   const trackId = Number(req.params.id);
@@ -531,6 +532,38 @@ app.get('/api/artist/stats', authMiddleware, h(async (req, res) => {
     price_per_stream_fcfa: NUNI_PRICE_PER_STREAM_FCFA,
     artist_share_pct: NUNI_ARTIST_SHARE_PCT,
   });
+}));
+
+// ---------- Streams des 6 derniers mois — pour le graphique du Dashboard ----------
+// Avant : const monthly = [{m:'Jan', v:31}, ...] codé en dur côté frontend, identique pour
+// tout le monde, jamais branché sur les vraies données. Ici : vrai regroupement des écoutes
+// (table plays) par mois pour les morceaux de CET artiste, sur les 6 derniers mois calendaires.
+// Les mois sans aucune écoute sont bien renvoyés à 0 (et non absents), pour que le graphique
+// affiche toujours 6 barres, dans l'ordre chronologique.
+app.get('/api/artist/stats/monthly', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+
+  const rows = await db.query(`
+    SELECT to_char(date_trunc('month', p.created_at), 'YYYY-MM') as month, COUNT(*)::int as streams
+    FROM plays p
+    JOIN tracks t ON t.id = p.track_id
+    WHERE t.artist_id = $1
+      AND p.created_at >= date_trunc('month', NOW()) - INTERVAL '5 months'
+    GROUP BY date_trunc('month', p.created_at)
+  `, [req.user.id]);
+
+  const byMonth = {};
+  rows.forEach((r) => { byMonth[r.month] = r.streams; });
+
+  const now = new Date();
+  const monthly = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    monthly.push({ m: MONTH_LABELS_FR[d.getMonth()], v: byMonth[key] || 0 });
+  }
+
+  res.json({ monthly });
 }));
 
 app.post('/api/follow', authMiddleware, h(async (req, res) => {
