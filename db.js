@@ -165,6 +165,19 @@ async function initSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS momo_number TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;`);
   await pool.query(`UPDATE users SET account_status = 'active' WHERE account_status IS NULL;`);
+
+  // ---------- Crédits réels du morceau ----------
+  // Avant : le formulaire de publication affichait des champs "Description", "Date de
+  // sortie", "Compositeur / Auteur", "Featuring", "Studio d'enregistrement" — mais rien
+  // n'était jamais envoyé au serveur ni sauvegardé. Les paroles étaient le seul champ
+  // vraiment branché. Ces colonnes stockent enfin les vrais crédits renseignés par
+  // l'artiste, affichés à la fois dans le lecteur (au lancement du son) et dans la
+  // fenêtre "Crédits" accessible depuis la page artiste.
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS composer TEXT;`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS featuring TEXT;`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS studio TEXT;`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS description TEXT;`);
+  await pool.query(`ALTER TABLE tracks ADD COLUMN IF NOT EXISTS release_date TIMESTAMPTZ;`);
 }
 
 module.exports = { pool, query, get, run, initSchema };
