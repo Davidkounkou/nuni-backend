@@ -727,6 +727,25 @@ app.get('/api/artist/stats/monthly', authMiddleware, h(async (req, res) => {
   res.json({ monthly });
 }));
 
+// ---------- Artistes à suivre — vrais artistes avec un Pass Artiste actif ----------
+// Avant : 6 noms codés en dur ("Bibi Mwana", "Ndombe Junior"...), identiques pour tout le
+// monde, indéfiniment. Ici : une vraie sélection aléatoire parmi les artistes ayant
+// réellement payé leur Pass Artiste (donc de vrais comptes actifs à soutenir), qui change
+// automatiquement toutes les 30 minutes — via un hash basé sur l'heure, pas de tâche
+// planifiée nécessaire : la même fenêtre de 30 min donne le même ordre pour tout le monde,
+// et l'ordre change tout seul dès qu'on passe à la fenêtre suivante.
+app.get('/api/artists/featured', h(async (req, res) => {
+  const rows = await db.query(`
+    SELECT u.id, u.artist_name, u.first_name, u.avatar_url, u.is_verified,
+      (SELECT genre FROM tracks WHERE artist_id = u.id AND genre IS NOT NULL ORDER BY created_at DESC LIMIT 1) as top_genre
+    FROM users u
+    WHERE u.account_type = 'artist' AND u.subscription_status = 'active' AND u.plan = 'artist'
+    ORDER BY md5(u.id::text || floor(extract(epoch from now())/1800)::text)
+    LIMIT 6
+  `);
+  res.json({ artists: rows });
+}));
+
 app.post('/api/follow', authMiddleware, h(async (req, res) => {
   const { artistId } = req.body;
   const artist = await db.get('SELECT * FROM users WHERE id = $1', [artistId]);
