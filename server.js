@@ -137,6 +137,99 @@ async function touchDailyLogin(userId) {
   } catch (e) { /* jamais bloquant */ }
 }
 
+// ================= DÉFIS QUOTIDIENS / HEBDOMADAIRES =================
+// Étape 3 de la gamification. Récompense en XP direct (la monnaie NUNI Points arrive à
+// l'étape 4, volontairement séparée). Les défis sont définis en code (comme NUNI_LEVELS) ;
+// seule la progression par utilisateur/période est stockée en base (challenge_progress).
+const CHALLENGES = [
+  { key: 'daily_listen_3', period: 'daily', title: 'Écouter 3 morceaux différents', target: 3, xp: 20 },
+  { key: 'daily_like_1', period: 'daily', title: 'Aimer un son ou un clip', target: 1, xp: 10 },
+  { key: 'weekly_listen_15', period: 'weekly', title: 'Écouter 15 morceaux', target: 15, xp: 100 },
+  { key: 'weekly_follow_2', period: 'weekly', title: 'Suivre 2 nouveaux artistes', target: 2, xp: 50 },
+];
+
+function dailyPeriodKey() {
+  return new Date().toISOString().slice(0, 10); // ex: 2026-07-13
+}
+function weeklyPeriodKey() {
+  const d = new Date();
+  const dayIdx = (d.getUTCDay() + 6) % 7; // lundi = 0
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() - dayIdx);
+  return `W${monday.toISOString().slice(0, 10)}`;
+}
+function periodKeyFor(period) {
+  return period === 'weekly' ? weeklyPeriodKey() : dailyPeriodKey();
+}
+
+// Incrémente la progression d'un défi pour l'utilisateur, sur la période en cours.
+// Idempotent une fois complété (n'est jamais recompté ni dépassé), jamais bloquant.
+async function bumpChallenge(userId, challengeKey, amount = 1) {
+  try {
+    const def = CHALLENGES.find((c) => c.key === challengeKey);
+    if (!def || !userId) return;
+    const periodKey = periodKeyFor(def.period);
+    const row = await db.get(
+      'SELECT * FROM challenge_progress WHERE user_id = $1 AND challenge_key = $2 AND period_key = $3',
+      [userId, challengeKey, periodKey],
+    );
+    if (row && row.completed_at) return; // déjà complété cette période
+    const newProgress = Math.min((row ? row.progress : 0) + amount, def.target);
+    const justCompleted = newProgress >= def.target;
+    await db.run(`
+      INSERT INTO challenge_progress (user_id, challenge_key, period_key, progress, completed_at)
+      VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (user_id, challenge_key, period_key)
+      DO UPDATE SET progress = $4, completed_at = COALESCE(challenge_progress.completed_at, $5)
+    `, [userId, challengeKey, periodKey, newProgress, justCompleted ? new Date() : null]);
+  } catch (e) { /* jamais bloquant */ }
+}
+
+// Liste des défis en cours avec la progression réelle de l'utilisateur connecté.
+app.get('/api/me/challenges', authMiddleware, h(async (req, res) => {
+  const rows = await db.query(
+    'SELECT challenge_key, period_key, progress, completed_at, claimed_at FROM challenge_progress WHERE user_id = $1',
+    [req.user.id],
+  );
+  const byKey = {};
+  rows.forEach((r) => { byKey[`${r.challenge_key}::${r.period_key}`] = r; });
+
+  const challenges = CHALLENGES.map((def) => {
+    const periodKey = periodKeyFor(def.period);
+    const row = byKey[`${def.key}::${periodKey}`];
+    return {
+      key: def.key,
+      period: def.period,
+      title: def.title,
+      target: def.target,
+      xp: def.xp,
+      progress: row ? row.progress : 0,
+      completed: !!(row && row.completed_at),
+      claimed: !!(row && row.claimed_at),
+    };
+  });
+  res.json({ challenges });
+}));
+
+// Récupère l'XP d'un défi complété — une seule fois par période, vérifié côté serveur.
+app.post('/api/me/challenges/:key/claim', authMiddleware, h(async (req, res) => {
+  const def = CHALLENGES.find((c) => c.key === req.params.key);
+  if (!def) return res.status(404).json({ error: 'Défi introuvable.' });
+  const periodKey = periodKeyFor(def.period);
+  const row = await db.get(
+    'SELECT * FROM challenge_progress WHERE user_id = $1 AND challenge_key = $2 AND period_key = $3',
+    [req.user.id, def.key, periodKey],
+  );
+  if (!row || !row.completed_at) return res.status(400).json({ error: 'Défi pas encore complété.' });
+  if (row.claimed_at) return res.status(400).json({ error: 'Récompense déjà récupérée.' });
+  await db.run(
+    'UPDATE challenge_progress SET claimed_at = NOW() WHERE user_id = $1 AND challenge_key = $2 AND period_key = $3',
+    [req.user.id, def.key, periodKey],
+  );
+  await addXp(req.user.id, def.xp);
+  res.json({ message: `+${def.xp} XP !`, xp_awarded: def.xp });
+}));
+
 // ================= AUTH =================
 
 app.post('/api/register', h(async (req, res) => {
@@ -655,6 +748,8 @@ app.post('/api/tracks/:id/play', h(async (req, res) => {
   await db.run('INSERT INTO plays (track_id, listener_id) VALUES ($1,$2)', [trackId, listenerId]);
   await db.run('UPDATE tracks SET streams = streams + 1 WHERE id = $1', [trackId]);
   await addXp(listenerId, 5);
+  await bumpChallenge(listenerId, 'daily_listen_3', 1);
+  await bumpChallenge(listenerId, 'weekly_listen_15', 1);
   res.json({ counted: true, streams: track.streams + 1 });
 }));
 
@@ -674,6 +769,7 @@ app.post('/api/tracks/:id/like', authMiddleware, h(async (req, res) => {
     await db.run('INSERT INTO track_likes (user_id, track_id) VALUES ($1,$2)', [req.user.id, trackId]);
     await db.run('UPDATE tracks SET likes = likes + 1 WHERE id = $1', [trackId]);
     liked = true;
+    await bumpChallenge(req.user.id, 'daily_like_1', 1);
   }
   const fresh = await db.get('SELECT likes FROM tracks WHERE id = $1', [trackId]);
   res.json({ liked, likes: fresh.likes });
@@ -702,6 +798,7 @@ app.post('/api/clips/:id/like', authMiddleware, h(async (req, res) => {
     await db.run('INSERT INTO clip_likes (user_id, clip_id) VALUES ($1,$2)', [req.user.id, clipId]);
     await db.run('UPDATE clips SET likes = likes + 1 WHERE id = $1', [clipId]);
     liked = true;
+    await bumpChallenge(req.user.id, 'daily_like_1', 1);
     // Exclusion mutuelle façon YouTube — un "j'aime" retire automatiquement un "je n'aime pas"
     // déjà posé par la même personne sur ce clip.
     const existingDislike = await db.get('SELECT id FROM clip_dislikes WHERE user_id = $1 AND clip_id = $2', [req.user.id, clipId]);
@@ -849,6 +946,7 @@ app.post('/api/follow', authMiddleware, h(async (req, res) => {
     await db.run('INSERT INTO follows (follower_id, artist_id) VALUES ($1,$2)', [req.user.id, artist.id]);
     following = true;
     await addXp(req.user.id, 20);
+    await bumpChallenge(req.user.id, 'weekly_follow_2', 1);
   }
   const followersCount = (await db.get('SELECT COUNT(*)::int as c FROM follows WHERE artist_id = $1', [artist.id])).c;
   res.json({ following, followersCount });

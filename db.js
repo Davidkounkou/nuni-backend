@@ -210,6 +210,23 @@ async function initSchema() {
       UNIQUE(artist_id, track_id)
     );
   `);
+
+  // ---------- Défis quotidiens / hebdomadaires ----------
+  // Progression par utilisateur, par défi, par période (jour ou semaine). completed_at posé
+  // dès que la cible est atteinte, claimed_at posé quand l'XP a été récupérée (une seule fois).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS challenge_progress (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      challenge_key TEXT NOT NULL,
+      period_key TEXT NOT NULL,
+      progress INTEGER NOT NULL DEFAULT 0,
+      completed_at TIMESTAMPTZ,
+      claimed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, challenge_key, period_key)
+    );
+  `);
 }
 
 module.exports = { pool, query, get, run, initSchema };
