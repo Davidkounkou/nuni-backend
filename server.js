@@ -11,7 +11,23 @@ const {
 const { sendAccessCodeEmail } = require('./mailer');
 
 const app = express();
-app.use(cors());
+// ---------- CORS restreint (durcissement sécurité) ----------
+// Avant : cors() sans configuration acceptait des requêtes depuis N'IMPORTE QUEL site web.
+// NUNI n'utilise pas de cookies de session (juste un token Bearer attaché manuellement en JS),
+// ce qui limite déjà fortement le risque CSRF classique — mais autoriser tous les domaines
+// reste une porte ouverte inutile : un site tiers malveillant pourrait quand même appeler
+// l'API si un token a fuité ailleurs (XSS sur un autre site, etc.). On restreint donc aux
+// vrais domaines de NUNI. Les requêtes sans origine (Postman, curl, apps mobiles, appels
+// serveur-à-serveur) restent autorisées — un navigateur ne les émet jamais sans origine.
+const ALLOWED_ORIGINS = [
+  'https://nuni-misikicg.github.io',
+];
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(new Error('Origine non autorisée par la politique CORS de NUNI.'));
+  },
+}));
 app.use(express.json({ limit: '15mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
