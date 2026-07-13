@@ -1,5 +1,6 @@
 // auth.js — Utilitaires d'authentification NUNI (adapté Postgres / async)
 const bcrypt = require('bcryptjs');
+const argon2 = require('argon2');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('./db');
@@ -25,12 +26,31 @@ async function initAuth() {
   JWT_SECRET = generated;
 }
 
+// ---------- Mots de passe : Argon2id pour tout nouveau hash ----------
+// Migration transparente : les comptes créés avant ce changement ont un hash bcrypt
+// ($2a$/$2b$...) — il reste vérifiable normalement à la connexion. On ne force aucune
+// réinitialisation de mot de passe. Dès qu'un compte bcrypt se connecte avec succès,
+// son mot de passe est ré-haché en Argon2id et mis à jour en base à la volée (voir
+// needsRehash + le point d'appel dans server.js /api/login) — la base entière migre
+// donc progressivement, sans interruption de service ni action demandée aux personnes.
 async function hashPassword(plain) {
-  return bcrypt.hash(plain, 12);
+  return argon2.hash(plain, { type: argon2.argon2id });
+}
+
+function isBcryptHash(hash) {
+  return typeof hash === 'string' && /^\$2[aby]?\$/.test(hash);
 }
 
 async function verifyPassword(plain, hash) {
-  return bcrypt.compare(plain, hash);
+  if (isBcryptHash(hash)) {
+    return bcrypt.compare(plain, hash);
+  }
+  return argon2.verify(hash, plain);
+}
+
+// Utilisé juste après une connexion réussie pour savoir s'il faut migrer ce hash.
+function needsRehash(hash) {
+  return isBcryptHash(hash);
 }
 
 function signToken(user) {
@@ -94,4 +114,6 @@ async function authMiddleware(req, res, next) {
   next();
 }
 
-module.exports = { initAuth, hashPassword, verifyPassword, signToken, verifyToken, generateAccessCode, authMiddleware };
+module.exports = {
+  initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode, authMiddleware,
+};

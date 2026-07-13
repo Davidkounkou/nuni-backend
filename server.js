@@ -6,7 +6,7 @@ const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
 const db = require('./db');
 const {
-  initAuth, hashPassword, verifyPassword, signToken, verifyToken, generateAccessCode, authMiddleware,
+  initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode, authMiddleware,
 } = require('./auth');
 const { sendAccessCodeEmail } = require('./mailer');
 
@@ -344,6 +344,15 @@ app.post('/api/login', h(async (req, res) => {
 
   const ok = await verifyPassword(password || '', user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
+
+  // Migration Argon2id transparente : si ce compte a encore un ancien hash bcrypt, on le
+  // ré-hache maintenant qu'on connaît le mot de passe en clair (juste le temps de cette
+  // requête, jamais stocké) — aucune action demandée à la personne, jamais bloquant.
+  if (needsRehash(user.password_hash)) {
+    hashPassword(password).then((newHash) => {
+      db.run('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, user.id]).catch(() => {});
+    }).catch(() => {});
+  }
 
   if (user.account_status === 'deleted') {
     return res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
