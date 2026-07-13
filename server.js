@@ -415,6 +415,43 @@ app.get('/api/me/progress', authMiddleware, h(async (req, res) => {
   res.json({ ...levelInfoForXp(user.xp || 0), streak_days: user.streak_days || 0, nuni_points: (await db.get('SELECT nuni_points FROM users WHERE id = $1', [user.id])).nuni_points || 0, badges });
 }));
 
+// ---------- Classement public (XP) — étape 5 gamification ----------
+// Top 20 auditeurs par XP, visible par n'importe qui (comme les stats publiques d'un artiste).
+// Si la personne connectée n'est pas dans le top 20, son propre rang est renvoyé en plus,
+// pour qu'elle se voie toujours quelque part même très loin dans le classement.
+app.get('/api/leaderboard', h(async (req, res) => {
+  const top = await db.query(`
+    SELECT id, first_name, artist_name, account_type, avatar_url, xp,
+      RANK() OVER (ORDER BY xp DESC) as rnk
+    FROM users
+    WHERE xp > 0
+    ORDER BY xp DESC
+    LIMIT 20
+  `);
+
+  let me = null;
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (payload) {
+    const alreadyInTop = top.find((r) => r.id === payload.id);
+    if (!alreadyInTop) {
+      me = await db.get(`
+        WITH ranked AS (SELECT id, xp, RANK() OVER (ORDER BY xp DESC) as rnk FROM users WHERE xp > 0)
+        SELECT rnk, xp FROM ranked WHERE id = $1
+      `, [payload.id]);
+    }
+  }
+
+  res.json({
+    top: top.map((r) => ({
+      rank: Number(r.rnk), id: r.id, name: r.artist_name || r.first_name,
+      account_type: r.account_type, avatar_url: r.avatar_url, xp: r.xp,
+    })),
+    my_rank: me ? { rank: Number(me.rnk), xp: me.xp } : null,
+  });
+}));
+
 // ================= ABONNEMENT =================
 
 app.post('/api/subscribe/request', authMiddleware, h(async (req, res) => {
