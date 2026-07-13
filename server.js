@@ -122,8 +122,13 @@ function levelInfoForXp(xp) {
 async function addXp(userId, amount) {
   try { await db.run('UPDATE users SET xp = COALESCE(xp,0) + $1 WHERE id = $2', [amount, userId]); } catch (e) { /* jamais bloquant */ }
 }
-// Connexion quotidienne : +15 XP la première fois du jour, et incrémente la vraie série
-// (streak_days) si la dernière activité était bien hier — remise à zéro sinon.
+// NUNI Points — monnaie virtuelle dépensée dans la boutique (badges cosmétiques uniquement,
+// aucune conversion en FCFA, aucun lien avec la rémunération réelle des artistes).
+async function addPoints(userId, amount) {
+  try { await db.run('UPDATE users SET nuni_points = COALESCE(nuni_points,0) + $1 WHERE id = $2', [amount, userId]); } catch (e) { /* jamais bloquant */ }
+}
+// Connexion quotidienne : +15 XP et +5 NUNI Points la première fois du jour, et incrémente
+// la vraie série (streak_days) si la dernière activité était bien hier — remise à zéro sinon.
 async function touchDailyLogin(userId) {
   try {
     const user = await db.get('SELECT last_active_date, streak_days FROM users WHERE id = $1', [userId]);
@@ -133,9 +138,58 @@ async function touchDailyLogin(userId) {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     const wasYesterday = user.last_active_date && new Date(user.last_active_date).toISOString().slice(0, 10) === yesterday;
     const newStreak = wasYesterday ? (user.streak_days || 0) + 1 : 1;
-    await db.run('UPDATE users SET last_active_date = $1, streak_days = $2, xp = COALESCE(xp,0) + 15 WHERE id = $3', [today, newStreak, userId]);
+    await db.run(
+      'UPDATE users SET last_active_date = $1, streak_days = $2, xp = COALESCE(xp,0) + 15, nuni_points = COALESCE(nuni_points,0) + 5 WHERE id = $3',
+      [today, newStreak, userId],
+    );
   } catch (e) { /* jamais bloquant */ }
 }
+
+// ================= BOUTIQUE NUNI POINTS =================
+// Étape 4 de la gamification. Articles purement cosmétiques : des badges collectionnables
+// supplémentaires, achetés une seule fois, qui viennent s'ajouter à "Vos badges d'auditeur".
+const SHOP_ITEMS = [
+  { key: 'badge_gold_disc', name: '🥇 Disque d\'Or', description: 'Badge collector', cost: 100 },
+  { key: 'badge_early_bird', name: '🌅 Lève-tôt NUNI', description: 'Badge collector', cost: 150 },
+  { key: 'badge_flame_king', name: '👑 Roi du Streak', description: 'Badge collector', cost: 250 },
+  { key: 'badge_legend', name: '⚡ Collectionneur', description: 'Badge collector', cost: 400 },
+];
+
+app.get('/api/shop/items', authMiddleware, h(async (req, res) => {
+  const owned = await db.query('SELECT item_key FROM shop_purchases WHERE user_id = $1', [req.user.id]);
+  const ownedSet = new Set(owned.map((o) => o.item_key));
+  const user = await db.get('SELECT nuni_points FROM users WHERE id = $1', [req.user.id]);
+  res.json({
+    points: user.nuni_points || 0,
+    items: SHOP_ITEMS.map((it) => ({ ...it, owned: ownedSet.has(it.key) })),
+  });
+}));
+
+app.post('/api/shop/items/:key/buy', authMiddleware, h(async (req, res) => {
+  const item = SHOP_ITEMS.find((i) => i.key === req.params.key);
+  if (!item) return res.status(404).json({ error: 'Article introuvable.' });
+  if (await db.get('SELECT id FROM shop_purchases WHERE user_id = $1 AND item_key = $2', [req.user.id, item.key])) {
+    return res.status(400).json({ error: 'Déjà acheté.' });
+  }
+  const user = await db.get('SELECT nuni_points FROM users WHERE id = $1', [req.user.id]);
+  if ((user.nuni_points || 0) < item.cost) {
+    return res.status(400).json({ error: 'Pas assez de NUNI Points.' });
+  }
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE users SET nuni_points = nuni_points - $1 WHERE id = $2', [item.cost, req.user.id]);
+    await client.query('INSERT INTO shop_purchases (user_id, item_key) VALUES ($1,$2)', [req.user.id, item.key]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+  const fresh = await db.get('SELECT nuni_points FROM users WHERE id = $1', [req.user.id]);
+  res.json({ message: `${item.name} débloqué !`, points: fresh.nuni_points });
+}));
 
 // ================= DÉFIS QUOTIDIENS / HEBDOMADAIRES =================
 // Étape 3 de la gamification. Récompense en XP direct (la monnaie NUNI Points arrive à
@@ -227,7 +281,9 @@ app.post('/api/me/challenges/:key/claim', authMiddleware, h(async (req, res) => 
     [req.user.id, def.key, periodKey],
   );
   await addXp(req.user.id, def.xp);
-  res.json({ message: `+${def.xp} XP !`, xp_awarded: def.xp });
+  const pointsAwarded = Math.round(def.xp / 2);
+  await addPoints(req.user.id, pointsAwarded);
+  res.json({ message: `+${def.xp} XP · +${pointsAwarded} NUNI Points !`, xp_awarded: def.xp, points_awarded: pointsAwarded });
 }));
 
 // ================= AUTH =================
@@ -347,7 +403,16 @@ app.get('/api/me/progress', authMiddleware, h(async (req, res) => {
     { ic: '🏆', n: 'Top auditeur du mois', locked: !isTopListener, d: isTopListener ? `Rang #${monthlyRank.rnk}` : 'Verrouillé' },
   ];
 
-  res.json({ ...levelInfoForXp(user.xp || 0), streak_days: user.streak_days || 0, badges });
+  // Badges cosmétiques achetés dans la boutique NUNI Points — toujours débloqués une fois payés.
+  const owned = await db.query('SELECT item_key FROM shop_purchases WHERE user_id = $1', [user.id]);
+  const ownedSet = new Set(owned.map((o) => o.item_key));
+  SHOP_ITEMS.forEach((it) => {
+    if (ownedSet.has(it.key)) {
+      badges.push({ ic: it.name.split(' ')[0], n: it.name.replace(/^\S+\s/, ''), locked: false, d: 'Boutique' });
+    }
+  });
+
+  res.json({ ...levelInfoForXp(user.xp || 0), streak_days: user.streak_days || 0, nuni_points: (await db.get('SELECT nuni_points FROM users WHERE id = $1', [user.id])).nuni_points || 0, badges });
 }));
 
 // ================= ABONNEMENT =================
@@ -748,6 +813,7 @@ app.post('/api/tracks/:id/play', h(async (req, res) => {
   await db.run('INSERT INTO plays (track_id, listener_id) VALUES ($1,$2)', [trackId, listenerId]);
   await db.run('UPDATE tracks SET streams = streams + 1 WHERE id = $1', [trackId]);
   await addXp(listenerId, 5);
+  await addPoints(listenerId, 1);
   await bumpChallenge(listenerId, 'daily_listen_3', 1);
   await bumpChallenge(listenerId, 'weekly_listen_15', 1);
   res.json({ counted: true, streams: track.streams + 1 });

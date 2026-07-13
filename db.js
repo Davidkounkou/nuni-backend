@@ -227,6 +227,20 @@ async function initSchema() {
       UNIQUE(user_id, challenge_key, period_key)
     );
   `);
+
+  // ---------- NUNI Points — monnaie virtuelle (étape 4 gamification) ----------
+  // Gagnée par l'écoute, la connexion quotidienne et les défis complétés. Dépensée dans la
+  // boutique contre des badges cosmétiques (aucune valeur réelle, jamais convertible en FCFA).
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS nuni_points INTEGER DEFAULT 0;`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shop_purchases (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      item_key TEXT NOT NULL,
+      purchased_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, item_key)
+    );
+  `);
 }
 
 module.exports = { pool, query, get, run, initSchema };
