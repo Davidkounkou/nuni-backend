@@ -625,8 +625,11 @@ async function activateAndNotify(user, plan, durationDays, promoCode) {
 
   const promoResult = await resolvePromoDiscount(promoCode, plan);
   const base = basePriceFor(plan, durationDays);
-  const amount_fcfa = (promoResult.valid && promoResult.pct)
-    ? Math.round(base * (1 - promoResult.pct / 100))
+  // Double protection : même si une ligne invalide existait déjà en base avant le garde-fou
+  // à la création, on borne ici aussi et on ne laisse jamais un prix final négatif ou nul.
+  const safePct = Math.min(100, Math.max(0, promoResult.pct || 0));
+  const amount_fcfa = (promoResult.valid && safePct)
+    ? Math.max(1, Math.round(base * (1 - safePct / 100)))
     : base;
 
   await db.run(`
@@ -1844,12 +1847,18 @@ app.post('/api/admin/promo-codes', h(async (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const { code, discount_pct, applies_to_plan, max_uses, expires_at } = req.body;
   if (!code || !discount_pct) return res.status(400).json({ error: 'Le code et le pourcentage de réduction sont obligatoires.' });
+  // Garde-fou contre une erreur de frappe (ex: "500" au lieu de "50") qui donnerait un prix
+  // négatif une fois appliqué — aucune vraie utilité commerciale à un code >100% ou négatif.
+  const pct = Number(discount_pct);
+  if (!(pct > 0 && pct <= 100)) {
+    return res.status(400).json({ error: 'Le pourcentage de réduction doit être compris entre 1 et 100.' });
+  }
   try {
     await db.run(`
       INSERT INTO promo_codes (code, discount_pct, applies_to_plan, max_uses, expires_at)
       VALUES ($1,$2,$3,$4,$5)
     `, [
-      String(code).toUpperCase().trim(), Number(discount_pct), applies_to_plan || null,
+      String(code).toUpperCase().trim(), pct, applies_to_plan || null,
       Number(max_uses) || 1, expires_at || null,
     ]);
   } catch (e) {
