@@ -1724,6 +1724,17 @@ app.post('/api/admin/users/delete', h(async (req, res) => {
   res.json({ message: `Compte ${email} supprimé définitivement — aucune donnée résiduelle (morceaux, clips, abonnements, écoutes, follows).` });
 }));
 
+// Lecture publique, minimale : juste de quoi afficher honnêtement "X/Y déjà utilisés"
+// sans jamais exposer les autres codes existants ni de données sensibles.
+app.get('/api/promo/:code/status', h(async (req, res) => {
+  const row = await db.get(
+    'SELECT code, discount_pct, used_count, max_uses, active FROM promo_codes WHERE UPPER(code) = UPPER($1)',
+    [req.params.code],
+  );
+  if (!row) return res.status(404).json({ error: 'Code introuvable.' });
+  res.json(row);
+}));
+
 app.get('/api/admin/promo-codes', h(async (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const rows = await db.query('SELECT * FROM promo_codes ORDER BY id DESC');
