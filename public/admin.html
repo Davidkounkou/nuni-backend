@@ -55,6 +55,7 @@
     <button class="tab-btn" data-tab="cert">🏅 Certifications</button>
     <button class="tab-btn" data-tab="tracks">🎵 Morceaux</button>
     <button class="tab-btn" data-tab="users">👥 Utilisateurs</button>
+    <button class="tab-btn" data-tab="hero">🖼️ Bannières</button>
   </div>
 
   <!-- ONGLET 1 : ACTIVER UN PASS -->
@@ -162,6 +163,23 @@
   <div class="pane" id="pane-users">
     <button class="secondary" onclick="loadUsers()">Charger les utilisateurs</button>
     <div id="users-list" style="margin-top:14px;"></div>
+  </div>
+
+  <!-- ONGLET 5 : BANNIÈRES HERO (images aléatoires, gérées uniquement ici) -->
+  <div class="pane" id="pane-hero">
+    <div class="card">
+      <label>Section</label>
+      <select id="hero-section">
+        <option value="accueil">Accueil</option>
+        <option value="top-congo">Top Congo</option>
+      </select>
+      <label>Nouvelle image (remplace jamais les existantes — s'ajoute au tirage aléatoire)</label>
+      <input id="hero-file-input" type="file" accept="image/*">
+      <button class="primary" onclick="uploadHeroImage()" style="margin-top:10px;">Envoyer cette image</button>
+      <div id="hero-upload-status" style="margin-top:8px;"></div>
+    </div>
+    <button class="secondary" onclick="loadHeroImages()" style="margin-top:14px;">Charger les images actuelles</button>
+    <div id="hero-images-list" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:14px;"></div>
   </div>
 
 <script>
@@ -440,6 +458,76 @@
       alert(data.message || data.error);
       loadPromoCodes();
     }catch(e){ alert('Erreur de connexion au serveur.'); }
+  }
+
+  // ---------- Bannières hero (upload direct Cloudinary, réservé à cette page admin) ----------
+  async function uploadHeroImage(){
+    const section = document.getElementById('hero-section').value;
+    const fileInput = document.getElementById('hero-file-input');
+    const status = document.getElementById('hero-upload-status');
+    const file = fileInput.files[0];
+    if(!file){ status.innerHTML = '<span class="urgent">Choisissez un fichier d\'abord.</span>'; return; }
+
+    status.textContent = 'Envoi en cours…';
+    try{
+      const sigRes = await fetch('/api/admin/upload-signature', { headers:{'x-admin-key':getKey()} });
+      const sig = await sigRes.json();
+      if(!sigRes.ok){ status.innerHTML = '<span class="urgent">❌ ' + (sig.error||'Clé admin invalide.') + '</span>'; return; }
+
+      const form = new FormData();
+      form.append('file', file);
+      form.append('api_key', sig.apiKey);
+      form.append('timestamp', sig.timestamp);
+      form.append('signature', sig.signature);
+      form.append('folder', sig.folder);
+
+      const cloudRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/image/upload`, { method:'POST', body: form });
+      const cloudData = await cloudRes.json();
+      if(!cloudRes.ok){ status.innerHTML = '<span class="urgent">❌ Envoi Cloudinary refusé.</span>'; return; }
+
+      const res = await fetch('/api/admin/hero-images', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
+        body: JSON.stringify({ section, imageUrl: cloudData.secure_url })
+      });
+      const data = await res.json();
+      if(!res.ok){ status.innerHTML = '<span class="urgent">❌ ' + (data.error||'Erreur.') + '</span>'; return; }
+      status.innerHTML = '<span style="color:#7ee6a8;">✅ Image ajoutée à la section "' + section + '".</span>';
+      fileInput.value = '';
+      loadHeroImages();
+    }catch(e){ status.innerHTML = '<span class="urgent">❌ Impossible de contacter le serveur.</span>'; }
+  }
+
+  async function loadHeroImages(){
+    const wrap = document.getElementById('hero-images-list');
+    wrap.innerHTML = 'Chargement…';
+    try{
+      const res = await fetch('/api/admin/hero-images', { headers:{'x-admin-key':getKey()} });
+      const data = await res.json();
+      if(!res.ok){ wrap.innerHTML = '<span class="urgent">❌ ' + (data.error||'Erreur.') + '</span>'; return; }
+      const images = data.images || [];
+      if(!images.length){ wrap.innerHTML = 'Aucune image ajoutée pour le moment — le site utilise l\'image par défaut du dépôt.'; return; }
+      wrap.innerHTML = '';
+      images.forEach(img=>{
+        const card = document.createElement('div');
+        card.style.cssText = 'width:220px; background:#141414; border:1px solid #2a2a2a; border-radius:10px; overflow:hidden;';
+        card.innerHTML = `
+          <div style="width:100%; height:120px; background-size:cover; background-position:center; background-image:url('${img.image_url}');"></div>
+          <div style="padding:8px;">
+            <div style="font-size:12px; color:#aaa;">${img.section}</div>
+            <button class="secondary" style="width:100%; margin-top:6px;" onclick="deleteHeroImage(${img.id})">🗑️ Supprimer</button>
+          </div>`;
+        wrap.appendChild(card);
+      });
+    }catch(e){ wrap.innerHTML = '<span class="urgent">❌ Impossible de contacter le serveur.</span>'; }
+  }
+
+  async function deleteHeroImage(id){
+    if(!confirm('Supprimer cette image ?')) return;
+    try{
+      const res = await fetch('/api/admin/hero-images/' + id, { method:'DELETE', headers:{'x-admin-key':getKey()} });
+      if(!res.ok){ alert('Erreur lors de la suppression.'); return; }
+      loadHeroImages();
+    }catch(e){ alert('Impossible de contacter le serveur.'); }
   }
 
   window.addEventListener('load', ()=>{ const k = localStorage.getItem('nuniAdminKey'); if(k) document.getElementById('key').value = k; });

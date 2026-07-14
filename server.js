@@ -61,6 +61,50 @@ app.get('/api/upload-signature', authMiddleware, h(async (req, res) => {
   });
 }));
 
+// ---------- Bannières hero — upload réservé à l'admin (admin.html, clé ADMIN_KEY) ----------
+// Même principe de signature Cloudinary que l'upload artiste ci-dessus, mais protégé par
+// checkAdminKey plutôt qu'un compte utilisateur : aucun utilisateur normal n'a accès à ces
+// deux endpoints, qui ne sont appelés que depuis admin.html.
+app.get('/api/admin/upload-signature', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const timestamp = Math.round(Date.now() / 1000);
+  const folder = 'nuni/hero';
+  const signature = cloudinary.utils.api_sign_request({ timestamp, folder }, cloudinary.config().api_secret);
+  res.json({
+    signature, timestamp, folder,
+    apiKey: cloudinary.config().api_key,
+    cloudName: cloudinary.config().cloud_name,
+  });
+}));
+
+app.get('/api/admin/hero-images', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const rows = await db.query('SELECT id, section, image_url, created_at FROM hero_images ORDER BY section, created_at DESC');
+  res.json({ images: rows });
+}));
+
+app.post('/api/admin/hero-images', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const { section, imageUrl } = req.body;
+  if (!section || !imageUrl) return res.status(400).json({ error: 'Section et imageUrl requis.' });
+  const row = await db.get('INSERT INTO hero_images (section, image_url) VALUES ($1,$2) RETURNING id', [section, imageUrl]);
+  res.json({ message: 'Image ajoutée.', id: row.id });
+}));
+
+app.delete('/api/admin/hero-images/:id', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  await db.run('DELETE FROM hero_images WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Image supprimée.' });
+}));
+
+// Public, lecture seule : une image aléatoire par section (ou la liste complète en option),
+// pour que le site affiche une bannière qui change à chaque visite sans jamais permettre
+// à un visiteur de la modifier.
+app.get('/api/hero-images/:section', h(async (req, res) => {
+  const rows = await db.query('SELECT image_url FROM hero_images WHERE section = $1', [req.params.section]);
+  res.json({ images: rows.map((r) => r.image_url) });
+}));
+
 const PRICE_TABLE = {
   consumer: { 30: 650, 90: 650, 365: 1500 },
   artist: { 90: 5000, 365: 10000 },

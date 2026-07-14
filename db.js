@@ -255,6 +255,19 @@ async function initSchema() {
       UNIQUE(user_id, week_key)
     );
   `);
+
+  // ---------- Bannières hero — gérées uniquement par l'admin ----------
+  // Plusieurs photos possibles par section (accueil, top-congo...), tirée au hasard côté
+  // client à chaque visite. Aucun utilisateur ne peut créer/modifier ces lignes — seul
+  // admin.html (protégé par ADMIN_KEY) y a accès en écriture.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS hero_images (
+      id SERIAL PRIMARY KEY,
+      section TEXT NOT NULL,
+      image_url TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
 }
 
 module.exports = { pool, query, get, run, initSchema };
