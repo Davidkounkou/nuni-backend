@@ -232,24 +232,32 @@ app.post('/api/shop/items/:key/buy', authMiddleware, rateLimit(15, 60000), h(asy
   if (await db.get('SELECT id FROM shop_purchases WHERE user_id = $1 AND item_key = $2', [req.user.id, item.key])) {
     return res.status(400).json({ error: 'Déjà acheté.' });
   }
-  const user = await db.get('SELECT nuni_points FROM users WHERE id = $1', [req.user.id]);
-  if ((user.nuni_points || 0) < item.cost) {
-    return res.status(400).json({ error: 'Pas assez de NUNI Points.' });
-  }
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('UPDATE users SET nuni_points = nuni_points - $1 WHERE id = $2', [item.cost, req.user.id]);
+    // Avant : le solde était vérifié AVANT la transaction, puis débité dedans — un
+    // double-clic rapide ou deux onglets pouvaient passer la vérification en même temps
+    // (tous deux liraient le même solde encore suffisant) et faire passer le solde en
+    // négatif. Maintenant : la condition de solde suffisant fait partie de l'UPDATE
+    // lui-même (atomique), donc une seule des deux requêtes concurrentes peut réussir.
+    const updated = await client.query(
+      'UPDATE users SET nuni_points = nuni_points - $1 WHERE id = $2 AND nuni_points >= $1 RETURNING nuni_points',
+      [item.cost, req.user.id],
+    );
+    if (updated.rowCount === 0) {
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(400).json({ error: 'Pas assez de NUNI Points.' });
+    }
     await client.query('INSERT INTO shop_purchases (user_id, item_key) VALUES ($1,$2)', [req.user.id, item.key]);
     await client.query('COMMIT');
+    res.json({ message: `${item.name} débloqué !`, points: updated.rows[0].nuni_points });
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
   } finally {
     client.release();
   }
-  const fresh = await db.get('SELECT nuni_points FROM users WHERE id = $1', [req.user.id]);
-  res.json({ message: `${item.name} débloqué !`, points: fresh.nuni_points });
 }));
 
 // ================= DÉFIS QUOTIDIENS / HEBDOMADAIRES =================
@@ -336,11 +344,24 @@ app.post('/api/me/challenges/:key/claim', authMiddleware, rateLimit(15, 60000), 
     [req.user.id, def.key, periodKey],
   );
   if (!row || !row.completed_at) return res.status(400).json({ error: 'Défi pas encore complété.' });
-  if (row.claimed_at) return res.status(400).json({ error: 'Récompense déjà récupérée.' });
-  await db.run(
-    'UPDATE challenge_progress SET claimed_at = NOW() WHERE user_id = $1 AND challenge_key = $2 AND period_key = $3',
-    [req.user.id, def.key, periodKey],
-  );
+  // Avant : vérifier "pas déjà récupéré" puis mettre à jour dans deux requêtes séparées
+  // permettait à deux clics rapides (ou deux onglets) de passer la vérification en même
+  // temps et de récupérer la récompense deux fois. Maintenant : la condition fait partie de
+  // l'UPDATE lui-même (atomique) — une seule requête concurrente peut réussir.
+  const client = await db.pool.connect();
+  let claimed;
+  try {
+    const result = await client.query(
+      'UPDATE challenge_progress SET claimed_at = NOW() WHERE user_id = $1 AND challenge_key = $2 AND period_key = $3 AND claimed_at IS NULL RETURNING id',
+      [req.user.id, def.key, periodKey],
+    );
+    claimed = result.rowCount > 0;
+  } finally {
+    client.release();
+  }
+  if (!claimed) {
+    return res.status(400).json({ error: 'Récompense déjà récupérée.' });
+  }
   await addXp(req.user.id, def.xp);
   const pointsAwarded = Math.round(def.xp / 2);
   await addPoints(req.user.id, pointsAwarded);
