@@ -571,7 +571,100 @@ async function activateAndNotify(user, plan, durationDays, promoCode) {
   };
 }
 
-function checkAdminKey(req, res) {
+// ---------- Playlists NUNI — vraies playlists, curées par l'équipe depuis l'admin ----------
+// Avant : la section "Playlists NUNI" du site n'était qu'une tranche arbitraire du
+// catalogue (tracks.slice(2,7)), aucune vraie playlist n'existait. Ici : de vraies
+// playlists en base, créées/éditées uniquement depuis admin.html (clé ADMIN_KEY), avec
+// un tirage aléatoire de titres proposé comme point de départ (l'admin peut ensuite
+// ajuster la sélection avant d'enregistrer — jamais publié sans validation humaine).
+app.get('/api/admin/playlists', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const playlists = await db.query('SELECT id, title, description, cover_url, created_at FROM playlists ORDER BY created_at DESC');
+  for (const p of playlists) {
+    p.track_ids = (await db.query('SELECT track_id FROM playlist_tracks WHERE playlist_id = $1 ORDER BY position', [p.id])).map((r) => r.track_id);
+  }
+  res.json({ playlists });
+}));
+
+app.get('/api/admin/playlists/random-picks', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const count = Math.min(20, Math.max(1, parseInt(req.query.count, 10) || 6));
+  const rows = await db.query(`
+    SELECT t.id, t.title, u.artist_name, u.first_name
+    FROM tracks t JOIN users u ON u.id = t.artist_id
+    WHERE t.published = 1
+    ORDER BY RANDOM() LIMIT $1
+  `, [count]);
+  res.json({ tracks: rows });
+}));
+
+app.post('/api/admin/playlists', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const { title, description, coverUrl, trackIds } = req.body;
+  if (!title || !Array.isArray(trackIds) || !trackIds.length) {
+    return res.status(400).json({ error: 'Titre et au moins un morceau requis.' });
+  }
+  const row = await db.get(
+    'INSERT INTO playlists (title, description, cover_url) VALUES ($1,$2,$3) RETURNING id',
+    [title, description || null, coverUrl || null],
+  );
+  for (let i = 0; i < trackIds.length; i++) {
+    await db.run('INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES ($1,$2,$3)', [row.id, trackIds[i], i]);
+  }
+  res.json({ message: 'Playlist créée.', id: row.id });
+}));
+
+app.put('/api/admin/playlists/:id', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const { title, description, coverUrl, trackIds } = req.body;
+  if (!title || !Array.isArray(trackIds) || !trackIds.length) {
+    return res.status(400).json({ error: 'Titre et au moins un morceau requis.' });
+  }
+  await db.run('UPDATE playlists SET title = $1, description = $2, cover_url = $3 WHERE id = $4', [title, description || null, coverUrl || null, req.params.id]);
+  await db.run('DELETE FROM playlist_tracks WHERE playlist_id = $1', [req.params.id]);
+  for (let i = 0; i < trackIds.length; i++) {
+    await db.run('INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES ($1,$2,$3)', [req.params.id, trackIds[i], i]);
+  }
+  res.json({ message: 'Playlist mise à jour.' });
+}));
+
+app.delete('/api/admin/playlists/:id', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  await db.run('DELETE FROM playlists WHERE id = $1', [req.params.id]);
+  res.json({ message: 'Playlist supprimée.' });
+}));
+
+// Public, lecture seule — liste des playlists avec un aperçu (pochette du 1er morceau si
+// aucune pochette dédiée n'a été choisie, et nombre réel de titres).
+app.get('/api/playlists', h(async (req, res) => {
+  const playlists = await db.query('SELECT id, title, description, cover_url FROM playlists ORDER BY created_at DESC');
+  for (const p of playlists) {
+    const countRow = await db.get('SELECT COUNT(*)::int as c FROM playlist_tracks WHERE playlist_id = $1', [p.id]);
+    p.track_count = countRow.c;
+    if (!p.cover_url) {
+      const firstCover = await db.get(`
+        SELECT t.cover_url FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+        WHERE pt.playlist_id = $1 ORDER BY pt.position LIMIT 1
+      `, [p.id]);
+      p.cover_url = firstCover ? firstCover.cover_url : null;
+    }
+  }
+  res.json({ playlists });
+}));
+
+app.get('/api/playlists/:id', h(async (req, res) => {
+  const playlist = await db.get('SELECT id, title, description, cover_url FROM playlists WHERE id = $1', [req.params.id]);
+  if (!playlist) return res.status(404).json({ error: 'Playlist introuvable.' });
+  const tracks = await db.query(`
+    SELECT t.id, t.title, t.cover_url, t.audio_url, t.genre, t.streams, t.likes, t.release_type,
+      u.artist_name, u.first_name, u.is_verified, u.id as artist_id
+    FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id JOIN users u ON u.id = t.artist_id
+    WHERE pt.playlist_id = $1 ORDER BY pt.position
+  `, [req.params.id]);
+  res.json({ playlist, tracks });
+}));
+
+
   const adminKey = req.headers['x-admin-key'];
   if (!process.env.ADMIN_KEY || adminKey !== process.env.ADMIN_KEY) {
     res.status(403).json({ error: 'Clé admin invalide.' });
