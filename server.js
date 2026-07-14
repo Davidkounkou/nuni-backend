@@ -664,7 +664,7 @@ app.get('/api/playlists/:id', h(async (req, res) => {
   res.json({ playlist, tracks });
 }));
 
-
+function checkAdminKey(req, res) {
   const adminKey = req.headers['x-admin-key'];
   if (!process.env.ADMIN_KEY || adminKey !== process.env.ADMIN_KEY) {
     res.status(403).json({ error: 'Clé admin invalide.' });
