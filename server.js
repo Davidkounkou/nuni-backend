@@ -392,7 +392,56 @@ app.post('/api/register', h(async (req, res) => {
   });
 }));
 
-// ---------- Connexion : VRAIE vérification de l'état du compte, à chaque tentative ----------
+// ---------- Pass Découverte — vrai compte, vrai essai 24h suivi côté serveur ----------
+// Avant : "démarrer la découverte" ne créait AUCUN compte, juste un compte à rebours en
+// mémoire du navigateur — remis à zéro à chaque rechargement, et rien ne bloquait jamais
+// vraiment l'accès à la fin. Ici : un vrai compte est créé, activé 24h immédiatement
+// (subscription_expires_at réel, vérifié par enforceSubscriptionExpiry comme n'importe quel
+// autre Pass). Après expiration, 2h de grâce pour valider un vrai Pass (voir
+// enforceDiscoveryDeletion plus bas) avant suppression complète et définitive du compte.
+app.post('/api/register-discovery', h(async (req, res) => {
+  const {
+    accountType, firstName, lastName, email, phone, password,
+    age, address, city, country, artistName, labelOrManager,
+  } = req.body;
+
+  if (!['consumer', 'artist'].includes(accountType)) {
+    return res.status(400).json({ error: 'Type de compte invalide (consumer ou artist).' });
+  }
+  const baseRequired = ['firstName', 'lastName', 'email', 'password', 'age', 'address', 'city', 'country'];
+  const missing = required(req.body, accountType === 'artist' ? [...baseRequired, 'artistName'] : baseRequired);
+  if (missing.length) return res.status(400).json({ error: `Champs manquants : ${missing.join(', ')}` });
+  if (!isEmail(email)) return res.status(400).json({ error: 'Adresse email invalide.' });
+  if (String(password).length < 8) return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères.' });
+  if (Number(age) < 16) return res.status(400).json({ error: 'NUNI est réservé aux 16 ans et plus.' });
+  if (await db.get('SELECT id FROM users WHERE email = $1', [email])) {
+    return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
+  }
+
+  const password_hash = await hashPassword(password);
+  const inserted = await db.get(`
+    INSERT INTO users (
+      account_type, first_name, last_name, email, phone, password_hash, age, address, city, country,
+      artist_name, label_or_manager, plan, subscription_status, subscription_expires_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'discovery','active',NOW() + INTERVAL '24 hours')
+    RETURNING id
+  `, [
+    accountType, firstName, lastName, email, phone || null, password_hash, Number(age), address, city, country,
+    accountType === 'artist' ? artistName : null,
+    accountType === 'artist' ? (labelOrManager || null) : null,
+  ]);
+
+  const user = await db.get('SELECT * FROM users WHERE id = $1', [inserted.id]);
+  const token = signToken(user);
+  res.status(201).json({
+    message: 'Pass Découverte activé — 24h pour explorer NUNI en intégralité.',
+    token,
+    user: publicUser(await withArtistStats(user)),
+  });
+}));
+
+
 // Ordre volontaire : on ne révèle rien sur l'existence du compte tant que le mot de passe
 // n'est pas confirmé exact. Ce n'est qu'APRÈS un mot de passe correct qu'on vérifie si le
 // compte est suspendu/supprimé — sinon on donnerait à n'importe qui un moyen de deviner
@@ -1667,6 +1716,46 @@ app.post('/api/admin/users/reactivate', h(async (req, res) => {
 }));
 
 // ---------- Suppression DÉFINITIVE d'un compte — cascade complète, aucun résidu ----------
+// Suppression complète et réutilisable d'un compte (aucune donnée résiduelle) — utilisée à
+// la fois par la suppression manuelle admin et par la purge automatique des comptes Pass
+// Découverte qui n'ont validé aucun vrai Pass dans le délai de grâce.
+async function fullyDeleteUser(userId) {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM clip_views WHERE viewer_id = $1', [userId]);
+    await client.query('DELETE FROM plays WHERE listener_id = $1', [userId]);
+    await client.query('DELETE FROM track_likes WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM clip_likes WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM clip_dislikes WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM follows WHERE follower_id = $1 OR artist_id = $1', [userId]);
+    await client.query('DELETE FROM payments WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM challenge_progress WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM shop_purchases WHERE user_id = $1', [userId]);
+    const tracks = await client.query('SELECT id FROM tracks WHERE artist_id = $1', [userId]);
+    for (const t of tracks.rows) {
+      await client.query('DELETE FROM plays WHERE track_id = $1', [t.id]);
+      await client.query('DELETE FROM track_likes WHERE track_id = $1', [t.id]);
+      await client.query('DELETE FROM featured_tracks WHERE track_id = $1', [t.id]);
+    }
+    await client.query('DELETE FROM tracks WHERE artist_id = $1', [userId]);
+    const clips = await client.query('SELECT id FROM clips WHERE artist_id = $1', [userId]);
+    for (const c of clips.rows) {
+      await client.query('DELETE FROM clip_views WHERE clip_id = $1', [c.id]);
+      await client.query('DELETE FROM clip_likes WHERE clip_id = $1', [c.id]);
+      await client.query('DELETE FROM clip_dislikes WHERE clip_id = $1', [c.id]);
+    }
+    await client.query('DELETE FROM clips WHERE artist_id = $1', [userId]);
+    await client.query('DELETE FROM users WHERE id = $1', [userId]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 app.post('/api/admin/users/delete', h(async (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const { email, confirm } = req.body;
@@ -1677,49 +1766,7 @@ app.post('/api/admin/users/delete', h(async (req, res) => {
   const user = await db.get('SELECT * FROM users WHERE email = $1', [email]);
   if (!user) return res.status(404).json({ error: "Aucun compte NUNI n'existe avec cet email." });
 
-  const client = await db.pool.connect();
-  try {
-    await client.query('BEGIN');
-    // Vues/écoutes générées par ce compte en tant qu'auditeur
-    await client.query('DELETE FROM clip_views WHERE viewer_id = $1', [user.id]);
-    await client.query('DELETE FROM plays WHERE listener_id = $1', [user.id]);
-    // Likes/dislikes donnés PAR ce compte sur les morceaux/clips d'autres artistes
-    await client.query('DELETE FROM track_likes WHERE user_id = $1', [user.id]);
-    await client.query('DELETE FROM clip_likes WHERE user_id = $1', [user.id]);
-    await client.query('DELETE FROM clip_dislikes WHERE user_id = $1', [user.id]);
-    // Follows dans les deux sens (abonné à d'autres artistes / suivi par d'autres)
-    await client.query('DELETE FROM follows WHERE follower_id = $1 OR artist_id = $1', [user.id]);
-    // Paiements liés
-    await client.query('DELETE FROM payments WHERE user_id = $1', [user.id]);
-    // Progression de gamification liée (défis + achats boutique) — ajoutée après la première
-    // version de cette cascade, oubliée ici jusqu'à présent : provoquait une violation de
-    // clé étrangère (donc un crash 500) dès qu'un compte ayant progressé était supprimé.
-    await client.query('DELETE FROM challenge_progress WHERE user_id = $1', [user.id]);
-    await client.query('DELETE FROM shop_purchases WHERE user_id = $1', [user.id]);
-    // Si c'est un artiste : vues/écoutes/likes/mises en avant reçues sur son contenu, puis le contenu lui-même
-    const tracks = await client.query('SELECT id FROM tracks WHERE artist_id = $1', [user.id]);
-    for (const t of tracks.rows) {
-      await client.query('DELETE FROM plays WHERE track_id = $1', [t.id]);
-      await client.query('DELETE FROM track_likes WHERE track_id = $1', [t.id]);
-      await client.query('DELETE FROM featured_tracks WHERE track_id = $1', [t.id]);
-    }
-    await client.query('DELETE FROM tracks WHERE artist_id = $1', [user.id]);
-    const clips = await client.query('SELECT id FROM clips WHERE artist_id = $1', [user.id]);
-    for (const c of clips.rows) {
-      await client.query('DELETE FROM clip_views WHERE clip_id = $1', [c.id]);
-      await client.query('DELETE FROM clip_likes WHERE clip_id = $1', [c.id]);
-      await client.query('DELETE FROM clip_dislikes WHERE clip_id = $1', [c.id]);
-    }
-    await client.query('DELETE FROM clips WHERE artist_id = $1', [user.id]);
-    // Enfin le compte lui-même
-    await client.query('DELETE FROM users WHERE id = $1', [user.id]);
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
+  await fullyDeleteUser(user.id);
 
   res.json({ message: `Compte ${email} supprimé définitivement — aucune donnée résiduelle (morceaux, clips, abonnements, écoutes, follows).` });
 }));
@@ -1869,12 +1916,33 @@ async function sendAbsenceReminders() {
 setInterval(sendAbsenceReminders, 24 * 60 * 60 * 1000);
 sendAbsenceReminders(); // premier passage au démarrage, pas besoin d'attendre 24h
 
+// ---------- Purge des comptes Pass Découverte non validés (2h de grâce après expiration) ----------
+// Ne touche QUE les comptes plan='discovery' encore au statut 'expired' — jamais un vrai
+// Pass Consommateur/Artiste payé. Dès qu'un compte Découverte valide un vrai Pass (via
+// activateAndNotify, redeem ou activation admin), son `plan` change et il sort
+// définitivement de la portée de cette purge.
+async function enforceDiscoveryDeletion() {
+  try {
+    const stale = await db.query(`
+      SELECT id FROM users
+      WHERE plan = 'discovery' AND subscription_status = 'expired'
+        AND subscription_expires_at IS NOT NULL
+        AND subscription_expires_at < NOW() - INTERVAL '2 hours'
+    `);
+    for (const u of stale) {
+      try { await fullyDeleteUser(u.id); } catch (e) { console.error('Erreur purge Pass Découverte pour user', u.id, e); }
+    }
+  } catch (e) { console.error('Erreur job purge Pass Découverte:', e); }
+}
+
 async function start() {
   await db.initSchema();
   await initAuth();
 
   enforceSubscriptionExpiry();
   setInterval(enforceSubscriptionExpiry, 60 * 1000);
+  enforceDiscoveryDeletion();
+  setInterval(enforceDiscoveryDeletion, 5 * 60 * 1000);
 
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => console.log(`NUNI backend en écoute sur http://localhost:${PORT}`));
