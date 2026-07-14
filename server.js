@@ -821,6 +821,19 @@ app.get('/api/artist/:id/public-stats', h(async (req, res) => {
   res.json({ follower_count: followerCount, track_count: trackCount, avatar_url: artist.avatar_url || null, banner_url: artist.banner_url || null });
 }));
 
+// "Mur des fans" — avant : 7 initiales codées en dur ("MK","PJ","TN"...), identiques pour
+// n'importe quel artiste. Ici : les vrais derniers followers réels (table follows).
+app.get('/api/artist/:id/recent-followers', h(async (req, res) => {
+  const artistId = Number(req.params.id);
+  const rows = await db.query(`
+    SELECT u.first_name, u.avatar_url FROM follows f
+    JOIN users u ON u.id = f.follower_id
+    WHERE f.artist_id = $1
+    ORDER BY f.id DESC LIMIT 8
+  `, [artistId]);
+  res.json({ followers: rows });
+}));
+
 app.get('/api/artist/:id/support-info', h(async (req, res) => {
   const artist = await db.get(
     'SELECT id, account_type, artist_name, first_name, momo_number FROM users WHERE id = $1',
