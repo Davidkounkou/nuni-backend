@@ -1732,6 +1732,14 @@ async function fullyDeleteUser(userId) {
     await client.query('DELETE FROM payments WHERE user_id = $1', [userId]);
     await client.query('DELETE FROM challenge_progress WHERE user_id = $1', [userId]);
     await client.query('DELETE FROM shop_purchases WHERE user_id = $1', [userId]);
+    // NUNI Talent : à la fois les votes DONNÉS par ce compte (user_id) et les votes REÇUS
+    // s'il est artiste (artist_id) — oublié jusqu'ici, même bug qui avait déjà été corrigé
+    // pour challenge_progress/shop_purchases (violation de clé étrangère → crash 500).
+    await client.query('DELETE FROM talent_votes WHERE user_id = $1 OR artist_id = $1', [userId]);
+    await client.query('DELETE FROM featured_tracks WHERE artist_id = $1', [userId]);
+    // Notifications reçues (la table a bien ON DELETE CASCADE sur user_id, mais autant être
+    // explicite ici plutôt que de dépendre uniquement du comportement du schéma).
+    await client.query('DELETE FROM notifications WHERE user_id = $1', [userId]);
     const tracks = await client.query('SELECT id FROM tracks WHERE artist_id = $1', [userId]);
     for (const t of tracks.rows) {
       await client.query('DELETE FROM plays WHERE track_id = $1', [t.id]);
