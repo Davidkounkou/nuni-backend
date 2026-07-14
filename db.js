@@ -326,6 +326,33 @@ async function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id, position);
   `);
+
+  // ---------- Signalements de morceaux — vrais, consultables côté admin ----------
+  // Avant : le bouton "Signaler" affichait juste un message de confirmation, sans jamais
+  // rien enregistrer nulle part. Maintenant : un vrai signalement, avec motif.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS track_reports (
+      id SERIAL PRIMARY KEY,
+      track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+      reporter_id INTEGER REFERENCES users(id),
+      reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  // ---------- Notifications push réelles (Web Push, iOS Safari 16.4+ / Android Chrome) ----------
+  // Un compte peut avoir plusieurs abonnements (plusieurs appareils/navigateurs). endpoint est
+  // unique : un même appareil ne peut être enregistré deux fois pour le même compte.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
+  `);
 }
 
 module.exports = { pool, query, get, run, initSchema };

@@ -4,6 +4,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const cloudinary = require('cloudinary').v2;
+const webpush = require('web-push');
 const db = require('./db');
 const {
   initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode, authMiddleware,
@@ -1587,6 +1588,57 @@ app.post('/api/talent/vote', authMiddleware, rateLimit(15, 60000), h(async (req,
   res.json({ message: 'Vote enregistré — merci de soutenir la scène congolaise 🕊️' });
 }));
 
+// ---------- Notifications push réelles (Web Push) ----------
+// Fonctionne sur Android Chrome et iOS Safari 16.4+ (l'utilisateur doit avoir "ajouté à
+// l'écran d'accueil" sur iPhone — restriction d'Apple, pas de NUNI). Les clés VAPID
+// identifient NUNI auprès des services de push (Apple/Google) ; PRIVATE ne doit jamais
+// être exposée côté client, seule PUBLIC_KEY l'est (via /api/push/public-key).
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BIGK6eEnQwDEt8spBzCm4XrwIpX3YPpLETv7hBrYbnPxyJA-vqNRratwo2j1vV0GPL5MVV9RNqyeLRVKWa5a9iM';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '7kcTsfLMjsrhfIyfCSkuUwMshZHWchhCDSrSvHxPPAk';
+webpush.setVapidDetails('mailto:nunimisiki@gmail.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+
+async function sendPushToUser(userId, { title, body, url }) {
+  try {
+    const subs = await db.query('SELECT * FROM push_subscriptions WHERE user_id = $1', [userId]);
+    for (const sub of subs) {
+      const pushSub = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } };
+      const payload = JSON.stringify({ title, body, url: url || '/' });
+      try {
+        await webpush.sendNotification(pushSub, payload);
+      } catch (e) {
+        // Abonnement expiré/révoqué (l'utilisateur a désinstallé, changé de navigateur...) :
+        // on le retire silencieusement, jamais bloquant pour le reste des envois.
+        if (e.statusCode === 404 || e.statusCode === 410) {
+          await db.run('DELETE FROM push_subscriptions WHERE id = $1', [sub.id]);
+        } else {
+          console.error('Erreur envoi push:', e.message);
+        }
+      }
+    }
+  } catch (e) { console.error('Erreur sendPushToUser:', e); }
+}
+
+app.get('/api/push/public-key', (req, res) => { res.json({ publicKey: VAPID_PUBLIC_KEY }); });
+
+app.post('/api/push/subscribe', authMiddleware, h(async (req, res) => {
+  const { endpoint, keys } = req.body;
+  if (!endpoint || !keys || !keys.p256dh || !keys.auth) {
+    return res.status(400).json({ error: 'Abonnement push invalide.' });
+  }
+  await db.run(`
+    INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+    VALUES ($1,$2,$3,$4)
+    ON CONFLICT (endpoint) DO UPDATE SET user_id = $1, p256dh = $3, auth = $4
+  `, [req.user.id, endpoint, keys.p256dh, keys.auth]);
+  res.json({ message: 'Notifications push activées.' });
+}));
+
+app.post('/api/push/unsubscribe', authMiddleware, h(async (req, res) => {
+  const { endpoint } = req.body;
+  if (endpoint) await db.run('DELETE FROM push_subscriptions WHERE endpoint = $1 AND user_id = $2', [endpoint, req.user.id]);
+  res.json({ message: 'Notifications push désactivées.' });
+}));
+
 // ---------- Notifications réelles ----------
 // Avant : 3 notifications codées en dur dans le HTML, identiques pour tout le monde,
 // badge toujours à "3". Ici : une vraie table, remplie uniquement à de vrais événements
@@ -1598,6 +1650,9 @@ async function createNotification(userId, type, title, body, link) {
       'INSERT INTO notifications (user_id, type, title, body, link) VALUES ($1,$2,$3,$4,$5)',
       [userId, type, title, body, link || null],
     );
+    // Chaque vraie notification devient aussi une vraie notification push, si la personne
+    // en a activé au moins une (sinon push_subscriptions est vide pour elle, boucle no-op).
+    sendPushToUser(userId, { title, body, url: link || '/' });
   } catch (e) { console.error('Erreur création notification:', e); }
 }
 
