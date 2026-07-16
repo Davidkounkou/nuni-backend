@@ -247,7 +247,6 @@ app.post('/api/shop/items/:key/buy', authMiddleware, rateLimit(15, 60000), h(asy
     );
     if (updated.rowCount === 0) {
       await client.query('ROLLBACK');
-      client.release();
       return res.status(400).json({ error: 'Pas assez de NUNI Points.' });
     }
     await client.query('INSERT INTO shop_purchases (user_id, item_key) VALUES ($1,$2)', [req.user.id, item.key]);
@@ -255,6 +254,13 @@ app.post('/api/shop/items/:key/buy', authMiddleware, rateLimit(15, 60000), h(asy
     res.json({ message: `${item.name} débloqué !`, points: updated.rows[0].nuni_points });
   } catch (e) {
     await client.query('ROLLBACK');
+    // Cas très rare (deux achats simultanés du même article) : la contrainte d'unicité sur
+    // shop_purchases refuse le doublon — la transaction entière est annulée automatiquement,
+    // donc les points ne sont jamais perdus. On répond proprement plutôt qu'avec une erreur
+    // générique 500, comme avant.
+    if (e.code === '23505') {
+      return res.status(400).json({ error: 'Déjà acheté.' });
+    }
     throw e;
   } finally {
     client.release();
