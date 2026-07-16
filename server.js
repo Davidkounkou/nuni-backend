@@ -2055,9 +2055,15 @@ app.get('/admin-verify.html', (req, res) => {
 setInterval(async () => {
   try {
     // Repérer AVANT publication ce qui va sortir, pour notifier les vrais abonnés
-    // (l'UPDATE seul ne permettrait pas de savoir quels morceaux viennent de changer).
+    // (l'UPDATE seul ne permettrait pas de savoir quels morceaux/clips viennent de changer).
     const newlyPublished = await db.query(`
       SELECT id, artist_id, title FROM tracks WHERE published = 0 AND scheduled_release_at <= NOW()
+    `);
+    // Avant : les clips programmés se publiaient bien automatiquement (UPDATE plus bas),
+    // mais contrairement aux morceaux, aucune notification n'était jamais envoyée aux
+    // abonnés — oubli, corrigé en reprenant exactement la même logique.
+    const newlyPublishedClips = await db.query(`
+      SELECT id, artist_id, title FROM clips WHERE published = 0 AND scheduled_release_at <= NOW()
     `);
     await db.run(`UPDATE tracks SET published = 1 WHERE published = 0 AND scheduled_release_at <= NOW()`);
     await db.run(`UPDATE clips SET published = 1 WHERE published = 0 AND scheduled_release_at <= NOW()`);
@@ -2070,6 +2076,17 @@ setInterval(async () => {
         await createNotification(
           f.follower_id, 'new_release', 'Nouvelle sortie suivie',
           `${artistName} vient de publier "${track.title}".`, null,
+        );
+      }
+    }
+    for (const clip of newlyPublishedClips) {
+      const artist = await db.get('SELECT artist_name, first_name FROM users WHERE id = $1', [clip.artist_id]);
+      const artistName = (artist && (artist.artist_name || artist.first_name)) || 'Un artiste que vous suivez';
+      const followers = await db.query('SELECT follower_id FROM follows WHERE artist_id = $1', [clip.artist_id]);
+      for (const f of followers) {
+        await createNotification(
+          f.follower_id, 'new_release', 'Nouveau clip suivi',
+          `${artistName} vient de publier le clip "${clip.title}".`, null,
         );
       }
     }
