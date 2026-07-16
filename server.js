@@ -1898,6 +1898,11 @@ async function fullyDeleteUser(userId) {
     // Notifications reçues (la table a bien ON DELETE CASCADE sur user_id, mais autant être
     // explicite ici plutôt que de dépendre uniquement du comportement du schéma).
     await client.query('DELETE FROM notifications WHERE user_id = $1', [userId]);
+    // Signalements faits PAR ce compte — oublié jusqu'ici, même bug déjà corrigé pour
+    // talent_votes/challenge_progress/shop_purchases (violation de clé étrangère → crash 500).
+    // Note : ceux REÇUS sur les morceaux de ce compte sont déjà couverts par le CASCADE de
+    // track_reports.track_id quand ses morceaux sont supprimés juste après.
+    await client.query('DELETE FROM track_reports WHERE reporter_id = $1', [userId]);
     const tracks = await client.query('SELECT id FROM tracks WHERE artist_id = $1', [userId]);
     for (const t of tracks.rows) {
       await client.query('DELETE FROM plays WHERE track_id = $1', [t.id]);
