@@ -174,6 +174,15 @@ async function initSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_url TEXT;`);
   await pool.query(`UPDATE users SET account_status = 'active' WHERE account_status IS NULL;`);
 
+  // ---------- Réinitialisation de mot de passe (code temporaire par email) ----------
+  // reset_code : code à 6 chiffres envoyé par email, à usage unique.
+  // reset_code_expires_at : le code n'est valide que 15 minutes.
+  // reset_code_attempts : compteur d'essais incorrects, pour bloquer le brute-force sur un
+  // code à 6 chiffres (1 million de combinaisons, cassable en boucle sans cette limite).
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code_expires_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code_attempts INTEGER DEFAULT 0;`);
+
   // ---------- Progression réelle (XP, niveaux, série d'écoute) ----------
   // Fondation du système de gamification demandé : plus de badges/niveaux inventés,
   // tout est calculé à partir de vraies actions (écoutes, connexions, suivis, achats de Pass).
