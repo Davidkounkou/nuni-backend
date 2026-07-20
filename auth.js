@@ -80,6 +80,21 @@ function generateAccessCode() {
   return code;
 }
 
+// ---------- Mot de passe oublié : code à 6 chiffres ----------
+// Code numérique (plus simple à saisir sur téléphone qu'un code alphanumérique).
+// Jamais stocké en clair en base — voir hashResetCode, même logique que les mots de passe.
+function generateResetCode() {
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += Math.floor(Math.random() * 10);
+  }
+  return code;
+}
+
+function hashResetCode(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+
 // ---------- Middleware d'authentification — RE-VÉRIFIE le compte en base à CHAQUE requête ----------
 // Avant : ce middleware faisait uniquement confiance au JWT (signature valide = accès autorisé),
 // sans jamais revérifier l'état réel du compte. Un compte suspendu ou supprimé APRÈS l'émission
@@ -115,5 +130,6 @@ async function authMiddleware(req, res, next) {
 }
 
 module.exports = {
-  initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode, authMiddleware,
+  initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode,
+  generateResetCode, hashResetCode, authMiddleware,
 };

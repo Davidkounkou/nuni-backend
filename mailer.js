@@ -68,4 +68,38 @@ async function sendAccessCodeEmail({ user, plan, accessCode, durationDays }) {
   }
 }
 
-module.exports = { sendAccessCodeEmail };
+// Envoie le code de réinitialisation directement au CLIENT (contrairement à
+// sendAccessCodeEmail, qui va toujours vers la boîte NUNI) — c'est lui qui a demandé
+// à réinitialiser son mot de passe, donc c'est à son adresse qu'on répond.
+async function sendPasswordResetEmail({ user, resetCode }) {
+  const t = getTransporter();
+  if (!t) return { sent: false, reason: 'email_not_configured' };
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color:#0E3D2C;">Réinitialisation de votre mot de passe NUNI</h2>
+      <p>Bonjour ${user.first_name},</p>
+      <p>Voici votre code pour réinitialiser votre mot de passe. Il est valable 15 minutes.</p>
+      <div style="background:#0E3D2C; color:#E8C77E; font-size:28px; font-weight:bold; letter-spacing:8px; text-align:center; padding:16px; border-radius:8px; margin:16px 0;">
+        ${resetCode}
+      </div>
+      <p style="color:#888; font-size:13px;">Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email — votre mot de passe restera inchangé.</p>
+      <p style="margin-top:20px; color:#888; font-size:12px;">NUNI — La musique congolaise mérite son envol.</p>
+    </div>
+  `;
+
+  try {
+    await t.sendMail({
+      from: `"NUNI" <${process.env.EMAIL_USER}>`,
+      to: user.email,
+      subject: `🔑 Votre code de réinitialisation NUNI : ${resetCode}`,
+      html,
+    });
+    return { sent: true };
+  } catch (err) {
+    console.error('[mailer] Échec envoi email de réinitialisation :', err.message);
+    return { sent: false, reason: err.message };
+  }
+}
+
+module.exports = { sendAccessCodeEmail, sendPasswordResetEmail };

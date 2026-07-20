@@ -7,9 +7,10 @@ const cloudinary = require('cloudinary').v2;
 const webpush = require('web-push');
 const db = require('./db');
 const {
-  initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode, authMiddleware,
+  initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode,
+  generateResetCode, hashResetCode, authMiddleware,
 } = require('./auth');
-const { sendAccessCodeEmail } = require('./mailer');
+const { sendAccessCodeEmail, sendPasswordResetEmail } = require('./mailer');
 
 const app = express();
 // ---------- CORS restreint (durcissement sécurité) ----------
@@ -503,6 +504,65 @@ app.post('/api/login', h(async (req, res) => {
   await touchDailyLogin(user.id);
   const fresh = await db.get('SELECT * FROM users WHERE id = $1', [user.id]);
   res.json({ token, user: publicUser(await withArtistStats(fresh)) });
+}));
+
+// ---------- Mot de passe oublié ----------
+// Étape 1 : demande d'un code à 6 chiffres, envoyé par email au client (pas à la boîte NUNI,
+// contrairement au code d'accès). On ne révèle JAMAIS si l'email correspond à un compte —
+// même message de succès dans tous les cas, pour ne pas permettre de deviner quels emails
+// sont inscrits sur NUNI.
+app.post('/api/auth/forgot-password', rateLimit(5, 15 * 60000), h(async (req, res) => {
+  const { email } = req.body;
+  if (!isEmail(email)) return res.status(400).json({ error: 'Adresse email invalide.' });
+
+  const user = await db.get('SELECT * FROM users WHERE email = $1', [email]);
+  if (user && user.account_status !== 'deleted') {
+    const code = generateResetCode();
+    await db.run(
+      `UPDATE users SET reset_code = $1, reset_code_expires_at = NOW() + INTERVAL '15 minutes', reset_code_attempts = 0 WHERE id = $2`,
+      [hashResetCode(code), user.id],
+    );
+    sendPasswordResetEmail({ user, resetCode: code }).catch((e) => {
+      console.error('[forgot-password] échec envoi email :', e.message);
+    });
+  }
+  res.json({ message: "Si un compte existe avec cet email, un code de réinitialisation vient d'être envoyé." });
+}));
+
+// Étape 2 : vérification du code + nouveau mot de passe. Code hashé (jamais stocké en clair),
+// expire après 15 minutes, et bloqué après 5 tentatives incorrectes (protection brute-force
+// sur un code à 6 chiffres).
+app.post('/api/auth/reset-password', rateLimit(10, 15 * 60000), h(async (req, res) => {
+  const { email, code, newPassword } = req.body;
+  if (!isEmail(email) || !code || !newPassword) {
+    return res.status(400).json({ error: 'Champs manquants.' });
+  }
+  if (String(newPassword).length < 8) {
+    return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères.' });
+  }
+
+  const user = await db.get('SELECT * FROM users WHERE email = $1', [email]);
+  if (!user || !user.reset_code || !user.reset_code_expires_at) {
+    return res.status(400).json({ error: 'Code invalide ou expiré.' });
+  }
+  if (new Date(user.reset_code_expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: "Ce code a expiré — merci d'en redemander un nouveau." });
+  }
+  if (user.reset_code_attempts >= 5) {
+    await db.run('UPDATE users SET reset_code = NULL, reset_code_expires_at = NULL WHERE id = $1', [user.id]);
+    return res.status(400).json({ error: 'Trop de tentatives incorrectes — merci de redemander un nouveau code.' });
+  }
+  if (hashResetCode(code) !== user.reset_code) {
+    await db.run('UPDATE users SET reset_code_attempts = reset_code_attempts + 1 WHERE id = $1', [user.id]);
+    return res.status(400).json({ error: 'Code incorrect.' });
+  }
+
+  const password_hash = await hashPassword(newPassword);
+  await db.run(
+    `UPDATE users SET password_hash = $1, reset_code = NULL, reset_code_expires_at = NULL, reset_code_attempts = 0 WHERE id = $2`,
+    [password_hash, user.id],
+  );
+  res.json({ message: 'Mot de passe réinitialisé — vous pouvez maintenant vous connecter.' });
 }));
 
 app.get('/api/me', authMiddleware, h(async (req, res) => {
