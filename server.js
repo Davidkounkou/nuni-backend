@@ -962,13 +962,29 @@ app.put('/api/artist/banner', authMiddleware, h(async (req, res) => {
   res.json({ message: 'Photo de couverture mise à jour.', banner_url: bannerUrl });
 }));
 
+// ---------- Vraie biographie artiste — remplie par l'artiste lui-même ----------
+// Avant : texte générique codé en dur, jamais modifiable, affiché pour tout artiste réel
+// (page artiste + lecteur plein écran). Ici : un vrai champ, visible par tout le monde une
+// fois enregistré.
+app.put('/api/artist/bio', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const { bio } = req.body;
+  const cleaned = String(bio || '').trim().slice(0, 600);
+  await db.run('UPDATE users SET bio = $1 WHERE id = $2', [cleaned || null, req.user.id]);
+  res.json({ message: 'Biographie mise à jour.', bio: cleaned || null });
+}));
+
 app.get('/api/artist/:id/public-stats', h(async (req, res) => {
   const artistId = Number(req.params.id);
-  const artist = await db.get('SELECT id, account_type, avatar_url, banner_url FROM users WHERE id = $1', [artistId]);
+  const artist = await db.get('SELECT id, account_type, avatar_url, banner_url, bio FROM users WHERE id = $1', [artistId]);
   if (!artist || artist.account_type !== 'artist') return res.status(404).json({ error: 'Artiste introuvable.' });
   const followerCount = (await db.get('SELECT COUNT(*)::int as c FROM follows WHERE artist_id = $1', [artistId])).c;
   const trackCount = (await db.get('SELECT COUNT(*)::int as c FROM tracks WHERE artist_id = $1 AND published = 1', [artistId])).c;
-  res.json({ follower_count: followerCount, track_count: trackCount, avatar_url: artist.avatar_url || null, banner_url: artist.banner_url || null });
+  res.json({
+    follower_count: followerCount, track_count: trackCount,
+    avatar_url: artist.avatar_url || null, banner_url: artist.banner_url || null,
+    bio: artist.bio || null,
+  });
 }));
 
 // "Mur des fans" — avant : 7 initiales codées en dur ("MK","PJ","TN"...), identiques pour
