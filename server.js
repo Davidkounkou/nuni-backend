@@ -378,7 +378,7 @@ app.post('/api/me/challenges/:key/claim', authMiddleware, rateLimit(15, 60000), 
 
 // ================= AUTH =================
 
-app.post('/api/register', h(async (req, res) => {
+app.post('/api/register', rateLimit(10, 60 * 60000), h(async (req, res) => {
   const {
     accountType, firstName, lastName, email, phone, password,
     age, address, city, country, artistName, labelOrManager,
@@ -428,7 +428,7 @@ app.post('/api/register', h(async (req, res) => {
 // (subscription_expires_at réel, vérifié par enforceSubscriptionExpiry comme n'importe quel
 // autre Pass). Après expiration, 2h de grâce pour valider un vrai Pass (voir
 // enforceDiscoveryDeletion plus bas) avant suppression complète et définitive du compte.
-app.post('/api/register-discovery', h(async (req, res) => {
+app.post('/api/register-discovery', rateLimit(10, 60 * 60000), h(async (req, res) => {
   const {
     accountType, firstName, lastName, email, phone, password,
     age, address, city, country, artistName, labelOrManager,
@@ -475,7 +475,7 @@ app.post('/api/register-discovery', h(async (req, res) => {
 // n'est pas confirmé exact. Ce n'est qu'APRÈS un mot de passe correct qu'on vérifie si le
 // compte est suspendu/supprimé — sinon on donnerait à n'importe qui un moyen de deviner
 // quels emails ont un compte suspendu, juste en essayant de se connecter avec.
-app.post('/api/login', h(async (req, res) => {
+app.post('/api/login', rateLimit(10, 15 * 60000), h(async (req, res) => {
   await enforceSubscriptionExpiry();
   const { email, password } = req.body;
   const user = await db.get('SELECT * FROM users WHERE email = $1', [email || '']);
@@ -980,10 +980,18 @@ app.get('/api/artist/:id/public-stats', h(async (req, res) => {
   if (!artist || artist.account_type !== 'artist') return res.status(404).json({ error: 'Artiste introuvable.' });
   const followerCount = (await db.get('SELECT COUNT(*)::int as c FROM follows WHERE artist_id = $1', [artistId])).c;
   const trackCount = (await db.get('SELECT COUNT(*)::int as c FROM tracks WHERE artist_id = $1 AND published = 1', [artistId])).c;
+  // Auditeurs par mois — le frontend l'attendait depuis longtemps, jamais calculé côté
+  // serveur jusqu'ici. Vrai nombre de comptes distincts ayant réellement écouté un morceau
+  // de cet artiste depuis le 1er du mois calendaire en cours (table plays, horodatée).
+  const monthlyListeners = (await db.get(`
+    SELECT COUNT(DISTINCT p.listener_id)::int as c
+    FROM plays p JOIN tracks t ON t.id = p.track_id
+    WHERE t.artist_id = $1 AND p.created_at >= date_trunc('month', NOW())
+  `, [artistId])).c;
   res.json({
     follower_count: followerCount, track_count: trackCount,
     avatar_url: artist.avatar_url || null, banner_url: artist.banner_url || null,
-    bio: artist.bio || null,
+    bio: artist.bio || null, monthly_listeners: monthlyListeners,
   });
 }));
 
