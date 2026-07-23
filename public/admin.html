@@ -211,16 +211,26 @@
   <!-- ONGLET : REVERSEMENTS ARTISTES -->
   <div class="pane" id="pane-payouts">
     <div class="card">
+      <b style="color:#D4AF6A; font-size:13px;">⚙️ Taux de reversement</b>
+      <div class="muted" style="margin-top:4px;">S'applique à tous les nouveaux calculs de reversement (pas rétroactif sur les paiements déjà enregistrés).</div>
+      <label>Prix par stream (FCFA)</label>
+      <input id="rs-price" type="number" step="0.01" min="0.01" placeholder="2">
+      <label>Part reversée à l'artiste (%)</label>
+      <input id="rs-pct" type="number" min="1" max="100" placeholder="75">
+      <button class="secondary" style="margin-top:10px;" onclick="saveRoyaltySettings()">Enregistrer les taux</button>
+      <div id="rs-msg"></div>
+    </div>
+    <div class="card">
       <b style="color:#D4AF6A; font-size:13px;">💸 Combien reverser à chaque artiste</b>
       <div class="muted" style="margin-top:4px;">
-        Vrais streams cumulés depuis le début, montant calculé au même taux que le Dashboard de chaque artiste
-        (jamais un chiffre inventé). Aucun suivi de "déjà payé" pour l'instant — ce sont les totaux cumulés,
-        à comparer vous-même avec ce qui a déjà été viré.
+        Streams totaux = jamais touchés, toujours visibles publiquement. Streams de la période en cours = streams
+        totaux moins tout ce qui a déjà été payé — recalculé à chaque fois, sans compteur à réinitialiser à la main.
       </div>
       <button class="primary" style="margin-top:12px;" onclick="loadArtistPayouts()">Charger les reversements</button>
     </div>
     <div id="payouts-summary" style="margin-top:14px;"></div>
     <div id="payouts-list" style="margin-top:14px;"></div>
+    <div id="payouts-history-wrap" style="margin-top:14px;"></div>
   </div>
 
 <script>
@@ -720,23 +730,91 @@
     const summary = document.getElementById('payouts-summary');
     const wrap = document.getElementById('payouts-list');
     wrap.innerHTML = 'Chargement…';
+    document.getElementById('payouts-history-wrap').innerHTML = '';
     try{
       const res = await fetch('/api/admin/artist-payouts', { headers:{'x-admin-key':getKey()} });
       const data = await res.json();
       if(!res.ok){ wrap.innerHTML = '<span class="urgent">❌ ' + (data.error||'Erreur.') + '</span>'; summary.innerHTML=''; return; }
       const payouts = data.payouts || [];
+      document.getElementById('rs-price').value = data.price_per_stream_fcfa;
+      document.getElementById('rs-pct').value = data.artist_share_pct;
       summary.innerHTML = `<div class="card row">
-        <div><b style="color:#7ee6a8; font-size:18px;">${(data.total_due_fcfa||0).toLocaleString('fr-FR')} FCFA</b><div class="muted">Total dû à l'ensemble des artistes</div></div>
+        <div><b style="color:#7ee6a8; font-size:18px;">${(data.total_due_fcfa||0).toLocaleString('fr-FR')} FCFA</b><div class="muted">Total dû, tous artistes confondus</div></div>
         <div class="muted">${data.price_per_stream_fcfa} FCFA/stream · ${data.artist_share_pct}% reversé à l'artiste</div>
       </div>`;
       if(!payouts.length){ wrap.innerHTML = '<p class="muted">Aucun artiste avec des streams pour le moment.</p>'; return; }
-      let html = '<table><tr><th>Pseudo</th><th>Email</th><th>Streams</th><th>Montant à reverser</th></tr>';
+      const statusPill = (s)=> s==='à jour' ? '<span class="pill verified">à jour</span>' : (s==='prêt à payer' ? '<span class="pill pending">prêt à payer</span>' : '<span class="pill">en attente</span>');
+      let html = '<table><tr><th>Pseudo</th><th>Streams totaux</th><th>Période en cours</th><th>Montant dû</th><th>Statut</th><th>Dernier paiement</th><th></th></tr>';
       payouts.forEach(p=>{
-        html += `<tr><td><b>${p.pseudo}</b></td><td class="muted">${p.email}</td><td>${p.total_streams.toLocaleString('fr-FR')}</td>
-          <td><b style="color:#D4AF6A;">${p.amount_due_fcfa.toLocaleString('fr-FR')} FCFA</b></td></tr>`;
+        html += `<tr>
+          <td><b>${p.pseudo}</b><br><span class="muted">${p.email}</span></td>
+          <td>${p.total_streams.toLocaleString('fr-FR')}</td>
+          <td>${p.current_period_streams.toLocaleString('fr-FR')}</td>
+          <td><b style="color:#D4AF6A;">${p.amount_due_fcfa.toLocaleString('fr-FR')} FCFA</b></td>
+          <td>${statusPill(p.status)}</td>
+          <td class="muted">${p.last_payment_at ? new Date(p.last_payment_at).toLocaleDateString('fr-FR') : '—'}</td>
+          <td>
+            <button class="primary" ${p.amount_due_fcfa<=0?'disabled':''} onclick="payArtist(${p.id}, '${(p.pseudo||'').replace(/'/g,"&#39;")}', ${p.amount_due_fcfa})">Payer</button>
+            <button class="secondary" onclick="loadArtistPaymentHistory(${p.id}, '${(p.pseudo||'').replace(/'/g,"&#39;")}')">Historique</button>
+          </td>
+        </tr>`;
       });
       html += '</table>';
       wrap.innerHTML = html;
+    }catch(e){ wrap.innerHTML = '<span class="urgent">❌ Impossible de contacter le serveur.</span>'; }
+  }
+
+  async function saveRoyaltySettings(){
+    const msg = document.getElementById('rs-msg');
+    const price = document.getElementById('rs-price').value;
+    const pct = document.getElementById('rs-pct').value;
+    msg.textContent = 'Enregistrement…';
+    try{
+      const res = await fetch('/api/admin/royalty-settings', {
+        method:'PUT', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
+        body: JSON.stringify({ price_per_stream_fcfa: price || null, artist_share_pct: pct || null })
+      });
+      const data = await res.json();
+      if(!res.ok){ msg.innerHTML = '<span class="urgent">❌ ' + (data.error||'Erreur.') + '</span>'; return; }
+      msg.innerHTML = '<span style="color:#7ee6a8;">✅ Taux enregistrés.</span>';
+      loadArtistPayouts();
+    }catch(e){ msg.innerHTML = '<span class="urgent">❌ Impossible de contacter le serveur.</span>'; }
+  }
+
+  async function payArtist(artistId, pseudo, amount){
+    if(!confirm(`Confirmer le versement de ${amount.toLocaleString('fr-FR')} FCFA à ${pseudo} ?\n\nCeci enregistre le paiement et recalculera automatiquement le prochain montant dû à partir de zéro streams pour cet artiste — les streams publics ne sont jamais touchés.`)) return;
+    try{
+      const res = await fetch('/api/admin/artist-payouts/' + artistId + '/pay', {
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
+        body: JSON.stringify({ method:'Manuel' })
+      });
+      const data = await res.json();
+      if(!res.ok){ alert('❌ ' + (data.error||'Erreur.')); return; }
+      alert('✅ ' + data.message);
+      loadArtistPayouts();
+    }catch(e){ alert('Impossible de contacter le serveur.'); }
+  }
+
+  async function loadArtistPaymentHistory(artistId, pseudo){
+    const wrap = document.getElementById('payouts-history-wrap');
+    wrap.innerHTML = '<div class="card">Chargement de l\\'historique…</div>';
+    try{
+      const res = await fetch('/api/admin/artist-payouts/' + artistId + '/history', { headers:{'x-admin-key':getKey()} });
+      const data = await res.json();
+      if(!res.ok){ wrap.innerHTML = '<span class="urgent">❌ ' + (data.error||'Erreur.') + '</span>'; return; }
+      const history = data.history || [];
+      let html = `<div class="card"><b style="color:#D4AF6A; font-size:13px;">Historique — ${pseudo}</b>`;
+      if(!history.length){ html += '<p class="muted" style="margin-top:8px;">Aucun paiement enregistré pour le moment.</p>'; }
+      else{
+        html += '<table><tr><th>Date</th><th>Montant</th><th>Streams couverts</th><th>Méthode</th></tr>';
+        history.forEach(h=>{
+          html += `<tr><td>${new Date(h.created_at).toLocaleDateString('fr-FR')}</td><td><b style="color:#7ee6a8;">${h.amount_fcfa.toLocaleString('fr-FR')} FCFA</b></td><td>${h.streams_covered.toLocaleString('fr-FR')}</td><td class="muted">${h.method||'—'}</td></tr>`;
+        });
+        html += '</table>';
+      }
+      html += '</div>';
+      wrap.innerHTML = html;
+      wrap.scrollIntoView({behavior:'smooth', block:'nearest'});
     }catch(e){ wrap.innerHTML = '<span class="urgent">❌ Impossible de contacter le serveur.</span>'; }
   }
 

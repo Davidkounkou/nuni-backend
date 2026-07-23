@@ -192,6 +192,29 @@ async function initSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS has_seen_artist_contract INTEGER DEFAULT 0;`);
 
+  // ---------- Historique réel des paiements aux artistes ----------
+  // Chaque ligne = un vrai versement effectué. On n'y touche jamais les streams réels
+  // (tracks.streams, jamais modifié) : streams_covered enregistre juste combien de streams
+  // ce paiement précis couvrait, pour pouvoir recalculer "streams de la période en cours" =
+  // streams totaux actuels − somme de tous les streams_covered déjà payés à cet artiste.
+  // Plus robuste qu'un compteur à réinitialiser manuellement (aucun risque de désync).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS payment_history (
+      id SERIAL PRIMARY KEY,
+      artist_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount_fcfa INTEGER NOT NULL,
+      streams_covered INTEGER NOT NULL,
+      period_start TIMESTAMPTZ,
+      period_end TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      method TEXT DEFAULT 'Manuel',
+      reference TEXT,
+      note TEXT,
+      admin_key_used TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_payment_history_artist ON payment_history(artist_id);`);
+
   // ---------- Progression réelle (XP, niveaux, série d'écoute) ----------
   // Fondation du système de gamification demandé : plus de badges/niveaux inventés,
   // tout est calculé à partir de vraies actions (écoutes, connexions, suivis, achats de Pass).

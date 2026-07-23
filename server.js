@@ -10,7 +10,7 @@ const {
   initAuth, hashPassword, verifyPassword, needsRehash, signToken, verifyToken, generateAccessCode,
   generateResetCode, hashResetCode, authMiddleware,
 } = require('./auth');
-const { sendAccessCodeEmail, sendPasswordResetEmail, sendAdRequestEmail } = require('./mailer');
+const { sendAccessCodeEmail, sendPasswordResetEmail, sendAdRequestEmail, sendArtistPaymentEmail } = require('./mailer');
 
 const app = express();
 // ---------- CORS restreint (durcissement sécurité) ----------
@@ -1254,6 +1254,26 @@ const NUNI_PRICE_PER_STREAM_FCFA = 2;
 const NUNI_ARTIST_SHARE_PCT = 75;
 const MONTH_LABELS_FR = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];
 
+// ---------- Taux de reversement configurables (module Reversements artistes) ----------
+// Stockés dans app_settings (déjà utilisée pour le secret JWT) — pas de nouvelle table
+// pour deux valeurs. Si jamais rien n'a été configuré, on retombe sur les constantes
+// historiques ci-dessus (celles déjà utilisées par le Dashboard artiste classique).
+async function getRoyaltySettings() {
+  const priceRow = await db.get('SELECT value FROM app_settings WHERE key = $1', ['royalty_price_per_stream_fcfa']);
+  const shareRow = await db.get('SELECT value FROM app_settings WHERE key = $1', ['royalty_artist_share_pct']);
+  return {
+    price_per_stream_fcfa: priceRow ? Number(priceRow.value) : NUNI_PRICE_PER_STREAM_FCFA,
+    artist_share_pct: shareRow ? Number(shareRow.value) : NUNI_ARTIST_SHARE_PCT,
+  };
+}
+async function setRoyaltySetting(key, value) {
+  await db.run(
+    `INSERT INTO app_settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [key, String(value)],
+  );
+}
+
 app.post('/api/tracks/:id/play', rateLimit(30, 60000), h(async (req, res) => {
   const trackId = Number(req.params.id);
   const track = await db.get('SELECT id, artist_id, streams FROM tracks WHERE id = $1', [trackId]);
@@ -1947,6 +1967,136 @@ app.get('/api/admin/subscriptions', h(async (req, res) => {
   res.json({ subscriptions: rows, total_collected_fcfa: totalRow.total });
 }));
 
+// ================= REVERSEMENTS ARTISTES (royalties) =================
+// Principe central, jamais dévié : tracks.streams (les streams publics — profil, classements,
+// pages morceaux) n'est JAMAIS modifié par ce module, nulle part. Le "compteur de période"
+// n'est pas une valeur stockée à réinitialiser (risque de désync) : c'est un calcul dérivé —
+// total_streams actuel moins la somme des streams déjà couverts par un paiement passé
+// (payment_history.streams_covered). Payer un artiste ne fait qu'ajouter une ligne à
+// l'historique ; les vrais streams publics ne bougent jamais.
+
+app.get('/api/admin/royalty-settings', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  res.json(await getRoyaltySettings());
+}));
+
+app.put('/api/admin/royalty-settings', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const { price_per_stream_fcfa, artist_share_pct } = req.body;
+  if (price_per_stream_fcfa != null) {
+    const p = Number(price_per_stream_fcfa);
+    if (!(p > 0)) return res.status(400).json({ error: 'Le prix par stream doit être positif.' });
+    await setRoyaltySetting('royalty_price_per_stream_fcfa', p);
+  }
+  if (artist_share_pct != null) {
+    const pct = Number(artist_share_pct);
+    if (!(pct > 0 && pct <= 100)) return res.status(400).json({ error: 'Le pourcentage artiste doit être entre 1 et 100.' });
+    await setRoyaltySetting('royalty_artist_share_pct', pct);
+  }
+  res.json({ message: 'Taux de reversement mis à jour.', settings: await getRoyaltySettings() });
+}));
+
+// Calcule pour un artiste : streams déjà payés (somme de l'historique), streams de la
+// période en cours (dérivé, jamais stocké), montant dû, date du dernier paiement.
+async function computeArtistPayout(artistId, settings) {
+  const totalStreamsRow = await db.get(
+    'SELECT COALESCE(SUM(streams), 0)::int as c FROM tracks WHERE artist_id = $1', [artistId],
+  );
+  const paidRow = await db.get(
+    'SELECT COALESCE(SUM(streams_covered), 0)::int as c, MAX(paid_at)::text as last_paid FROM (SELECT streams_covered, period_end as paid_at FROM payment_history WHERE artist_id = $1) x',
+    [artistId],
+  );
+  const totalStreams = totalStreamsRow.c;
+  const alreadyPaidStreams = paidRow.c;
+  const currentPeriodStreams = Math.max(0, totalStreams - alreadyPaidStreams);
+  const amountDueFcfa = Math.round(currentPeriodStreams * settings.price_per_stream_fcfa * settings.artist_share_pct / 100);
+  return {
+    total_streams: totalStreams,
+    current_period_streams: currentPeriodStreams,
+    amount_due_fcfa: amountDueFcfa,
+    last_payment_at: paidRow.last_paid || null,
+    status: currentPeriodStreams === 0 ? 'à jour' : (amountDueFcfa > 0 ? 'prêt à payer' : 'en attente'),
+  };
+}
+
+app.get('/api/admin/artist-payouts', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const settings = await getRoyaltySettings();
+  const artists = await db.query(`
+    SELECT u.id, u.artist_name, u.first_name, u.email, u.account_status
+    FROM users u WHERE u.account_type = 'artist'
+    ORDER BY u.artist_name ASC NULLS LAST, u.first_name ASC
+  `);
+  const payouts = [];
+  for (const a of artists) {
+    const p = await computeArtistPayout(a.id, settings);
+    payouts.push({
+      id: a.id, pseudo: a.artist_name || a.first_name, real_name: `${a.first_name}`, email: a.email,
+      account_status: a.account_status, ...p,
+    });
+  }
+  payouts.sort((x, y) => y.amount_due_fcfa - x.amount_due_fcfa);
+  const totalDueFcfa = payouts.reduce((sum, p) => sum + p.amount_due_fcfa, 0);
+  res.json({ payouts, total_due_fcfa: totalDueFcfa, ...settings });
+}));
+
+app.get('/api/admin/artist-payouts/:artistId/history', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const rows = await db.query(
+    'SELECT id, amount_fcfa, streams_covered, period_start, period_end, method, reference, note, created_at FROM payment_history WHERE artist_id = $1 ORDER BY created_at DESC',
+    [Number(req.params.artistId)],
+  );
+  res.json({ history: rows });
+}));
+
+// Enregistre un vrai versement — ne touche jamais tracks.streams. Envoie un email à
+// l'artiste pour trace écrite, jamais bloquant si l'email échoue.
+app.post('/api/admin/artist-payouts/:artistId/pay', h(async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const artistId = Number(req.params.artistId);
+  const artist = await db.get('SELECT * FROM users WHERE id = $1 AND account_type = $2', [artistId, 'artist']);
+  if (!artist) return res.status(404).json({ error: 'Artiste introuvable.' });
+
+  const settings = await getRoyaltySettings();
+  const p = await computeArtistPayout(artistId, settings);
+  if (p.current_period_streams <= 0) {
+    return res.status(400).json({ error: "Aucun stream en attente de paiement pour cet artiste." });
+  }
+  const { method, reference, note } = req.body || {};
+  const lastPayment = await db.get(
+    'SELECT period_end FROM payment_history WHERE artist_id = $1 ORDER BY created_at DESC LIMIT 1', [artistId],
+  );
+  const inserted = await db.get(
+    `INSERT INTO payment_history (artist_id, amount_fcfa, streams_covered, period_start, period_end, method, reference, note)
+     VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7) RETURNING id`,
+    [artistId, p.amount_due_fcfa, p.current_period_streams, lastPayment ? lastPayment.period_end : artist.created_at,
+      method || 'Manuel', reference || null, note || null],
+  );
+  sendArtistPaymentEmail({
+    user: artist, amountFcfa: p.amount_due_fcfa, streamsCovered: p.current_period_streams,
+    periodStart: lastPayment ? lastPayment.period_end : artist.created_at, periodEnd: new Date(),
+  }).catch((e) => console.error('[artist-payouts] échec envoi email de versement :', e.message));
+
+  res.json({ message: `Versement de ${p.amount_due_fcfa.toLocaleString('fr-FR')} FCFA enregistré pour ${artist.artist_name || artist.first_name}.`, payment_id: inserted.id });
+}));
+
+// ---------- Côté artiste : son propre statut de paiement et son propre historique ----------
+app.get('/api/artist/payment-status', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const settings = await getRoyaltySettings();
+  const p = await computeArtistPayout(req.user.id, settings);
+  res.json({ ...p, price_per_stream_fcfa: settings.price_per_stream_fcfa, artist_share_pct: settings.artist_share_pct });
+}));
+
+app.get('/api/artist/payment-history', authMiddleware, h(async (req, res) => {
+  if (req.user.accountType !== 'artist') return res.status(403).json({ error: 'Réservé aux comptes Artiste.' });
+  const rows = await db.query(
+    'SELECT amount_fcfa, streams_covered, period_start, period_end, method, created_at FROM payment_history WHERE artist_id = $1 ORDER BY created_at DESC',
+    [req.user.id],
+  );
+  res.json({ history: rows });
+}));
+
 // ---------- Suspension d'un compte : coupe le Pass ET bloque totalement la connexion ----------
 // Contrairement à avant, ceci fixe désormais account_status='suspended', qui est vérifié
 // à CHAQUE connexion et à CHAQUE requête authentifiée — pas seulement l'abonnement.
@@ -1982,6 +2132,7 @@ async function fullyDeleteUser(userId) {
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('DELETE FROM payment_history WHERE artist_id = $1', [userId]);
     await client.query('DELETE FROM clip_views WHERE viewer_id = $1', [userId]);
     await client.query('DELETE FROM plays WHERE listener_id = $1', [userId]);
     await client.query('DELETE FROM track_likes WHERE user_id = $1', [userId]);
