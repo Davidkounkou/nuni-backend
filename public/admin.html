@@ -797,7 +797,7 @@
 
   async function loadArtistPaymentHistory(artistId, pseudo){
     const wrap = document.getElementById('payouts-history-wrap');
-    wrap.innerHTML = '<div class="card">Chargement de l\\'historique…</div>';
+    wrap.innerHTML = '<div class="card">Chargement de l\'historique…</div>';
     try{
       const res = await fetch('/api/admin/artist-payouts/' + artistId + '/history', { headers:{'x-admin-key':getKey()} });
       const data = await res.json();
