@@ -240,6 +240,28 @@
 <script>
   function getKey(){ const k = document.getElementById('key').value.trim(); localStorage.setItem('nuniAdminKey', k); return k; }
 
+  // ---------- Diagnostic automatique de la clé admin (affiché directement dans la page,
+  // pas besoin de console) — compare ce qui est tapé avec ce que le serveur attend. ----------
+  async function showAdminKeyDiagnostic(container){
+    try{
+      const r = await fetch('/api/admin/debug-key-check', { headers:{'x-admin-key':getKey()} });
+      const d = await r.json();
+      const box = document.createElement('div');
+      box.className = 'msg err';
+      box.style.marginTop = '10px';
+      box.innerHTML = '🔍 <b>Diagnostic</b> — correspondance : ' + (d.match ? '✅ OUI (la clé est bonne, le souci est ailleurs)' : '❌ NON')
+        + '<br>Longueur tapée : ' + d.providedLength + ' caractère(s) — Longueur attendue par le serveur : ' + d.expectedLength + ' caractère(s)'
+        + '<br>Tapé : commence par "' + d.providedFirstChar + '", finit par "' + d.providedLastChar + '"'
+        + '<br>Attendu : commence par "' + d.expectedFirstChar + '", finit par "' + d.expectedLastChar + '"';
+      container.appendChild(box);
+    }catch(e){
+      const box = document.createElement('div');
+      box.className = 'msg err';
+      box.innerHTML = '🔍 Diagnostic impossible à charger (route debug-key-check absente ou serveur inaccessible).';
+      container.appendChild(box);
+    }
+  }
+
   document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.onclick = ()=>{
       document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -396,7 +418,7 @@
     try{
       const res = await fetch('/api/admin/users', { headers:{'x-admin-key':getKey()} });
       const data = await res.json();
-      if(!res.ok){ list.innerHTML = '<div class="msg err">❌ '+(data.error||'Erreur')+'</div>'; return; }
+      if(!res.ok){ list.innerHTML = '<div class="msg err">❌ '+(data.error||'Erreur')+'</div>'; showAdminKeyDiagnostic(list); return; }
       let html = '<table><tr><th>Nom</th><th>Email</th><th>Type</th><th>Pass</th><th>Abonnement</th><th>Compte</th><th>Sons</th><th>Abonnés</th><th>Inscrit le</th></tr>';
       data.users.forEach(u=>{
         const name = u.account_type === 'artist' ? (u.artist_name || u.first_name) : (u.first_name+' '+u.last_name);
