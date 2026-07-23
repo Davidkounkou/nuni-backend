@@ -192,12 +192,6 @@ async function initSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS has_seen_artist_contract INTEGER DEFAULT 0;`);
 
-  // ---------- Historique réel des paiements aux artistes ----------
-  // Chaque ligne = un vrai versement effectué. On n'y touche jamais les streams réels
-  // (tracks.streams, jamais modifié) : streams_covered enregistre juste combien de streams
-  // ce paiement précis couvrait, pour pouvoir recalculer "streams de la période en cours" =
-  // streams totaux actuels − somme de tous les streams_covered déjà payés à cet artiste.
-  // Plus robuste qu'un compteur à réinitialiser manuellement (aucun risque de désync).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS payment_history (
       id SERIAL PRIMARY KEY,
@@ -214,6 +208,14 @@ async function initSchema() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_payment_history_artist ON payment_history(artist_id);`);
+
+  // ---------- Codes promo attribués personnellement à un utilisateur ----------
+  // Avant : un code promo était forcément partagé (comme NUNI30, "les 100 premiers
+  // inscrits"). Ici : un code peut être réservé à UNE seule personne — l'admin le crée pour
+  // récompenser un consommateur actif dans les défis quotidiens, ou un artiste. Si cette
+  // colonne est vide, le code reste un code partagé classique (comportement inchangé).
+  await pool.query(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS assigned_to_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;`);
+  await pool.query(`ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS note TEXT;`);
 
   // ---------- Progression réelle (XP, niveaux, série d'écoute) ----------
   // Fondation du système de gamification demandé : plus de badges/niveaux inventés,

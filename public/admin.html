@@ -136,6 +136,10 @@
       <input id="promo-max" type="number" min="1" value="100">
       <label>Expire le (optionnel)</label>
       <input id="promo-expires" type="date">
+      <label>Réserver à un utilisateur précis (optionnel — laisser vide pour un code partagé classique)</label>
+      <input id="promo-assign-email" type="email" placeholder="email@du-beneficiaire.com">
+      <label>Note (optionnel — pourquoi ce code, visible par vous et par le bénéficiaire)</label>
+      <input id="promo-note" type="text" placeholder="Récompense défis quotidiens — juillet 2026">
       <button class="primary" style="margin-top:14px; width:100%;" onclick="createPromo()">Créer le code</button>
       <div id="promo-msg"></div>
     </div>
@@ -462,19 +466,23 @@
     const applies_to_plan = document.getElementById('promo-plan').value;
     const max_uses = document.getElementById('promo-max').value;
     const expires_at = document.getElementById('promo-expires').value;
+    const assigned_to_email = document.getElementById('promo-assign-email').value.trim();
+    const note = document.getElementById('promo-note').value.trim();
     const msg = document.getElementById('promo-msg');
     if(!code || !discount_pct){ msg.innerHTML = '<div class="msg err">❌ Code et pourcentage obligatoires.</div>'; return; }
     msg.innerHTML = '<div class="msg">Création…</div>';
     try{
       const res = await fetch('/api/admin/promo-codes', {
         method:'POST', headers:{'Content-Type':'application/json','x-admin-key':getKey()},
-        body: JSON.stringify({ code, discount_pct, applies_to_plan, max_uses, expires_at })
+        body: JSON.stringify({ code, discount_pct, applies_to_plan, max_uses, expires_at, assigned_to_email: assigned_to_email || null, note: note || null })
       });
       const data = await res.json();
       if(!res.ok){ msg.innerHTML = '<div class="msg err">❌ '+(data.error||'Erreur')+'</div>'; return; }
       msg.innerHTML = '<div class="msg ok">✅ '+data.message+'</div>';
       document.getElementById('promo-code').value = '';
       document.getElementById('promo-pct').value = '';
+      document.getElementById('promo-assign-email').value = '';
+      document.getElementById('promo-note').value = '';
       loadPromoCodes();
     }catch(e){ msg.innerHTML = '<div class="msg err">❌ Impossible de contacter le serveur.</div>'; }
   }

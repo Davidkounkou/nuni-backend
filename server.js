@@ -119,7 +119,7 @@ function basePriceFor(plan, durationDays) {
   return Math.round((ref / refDays) * durationDays);
 }
 
-async function resolvePromoDiscount(code, plan) {
+async function resolvePromoDiscount(code, plan, userId) {
   if (!code) return { pct: 0, valid: true, code: null };
   const promo = await db.get('SELECT * FROM promo_codes WHERE code = $1', [String(code).toUpperCase().trim()]);
   if (!promo) return { pct: 0, valid: false, error: 'Code promo introuvable.' };
@@ -127,6 +127,11 @@ async function resolvePromoDiscount(code, plan) {
   if (promo.expires_at && new Date(promo.expires_at) < new Date()) return { pct: 0, valid: false, error: 'Code promo expiré.' };
   if (promo.used_count >= promo.max_uses) return { pct: 0, valid: false, error: "Ce code a atteint sa limite d'utilisation." };
   if (promo.applies_to_plan && promo.applies_to_plan !== plan) return { pct: 0, valid: false, error: "Ce code ne s'applique pas à ce Pass." };
+  // Code personnel : réservé à un seul compte, personne d'autre ne peut l'utiliser même en
+  // le devinant ou en le voyant passer quelque part.
+  if (promo.assigned_to_user_id && promo.assigned_to_user_id !== userId) {
+    return { pct: 0, valid: false, error: 'Ce code est réservé à un autre compte.' };
+  }
   return { pct: promo.discount_pct, valid: true, code: promo.code };
 }
 
@@ -717,7 +722,7 @@ async function activateAndNotify(user, plan, durationDays, promoCode) {
     WHERE id = $4
   `, [plan, String(durationDays), access_code, user.id]);
 
-  const promoResult = await resolvePromoDiscount(promoCode, plan);
+  const promoResult = await resolvePromoDiscount(promoCode, plan, user.id);
   const base = basePriceFor(plan, durationDays);
   // Double protection : même si une ligne invalide existait déjà en base avant le garde-fou
   // à la création, on borne ici aussi et on ne laisse jamais un prix final négatif ou nul.
@@ -2228,7 +2233,7 @@ app.get('/api/admin/promo-codes', h(async (req, res) => {
 
 app.post('/api/admin/promo-codes', h(async (req, res) => {
   if (!checkAdminKey(req, res)) return;
-  const { code, discount_pct, applies_to_plan, max_uses, expires_at } = req.body;
+  const { code, discount_pct, applies_to_plan, max_uses, expires_at, assigned_to_email, note } = req.body;
   if (!code || !discount_pct) return res.status(400).json({ error: 'Le code et le pourcentage de réduction sont obligatoires.' });
   // Garde-fou contre une erreur de frappe (ex: "500" au lieu de "50") qui donnerait un prix
   // négatif une fois appliqué — aucune vraie utilité commerciale à un code >100% ou négatif.
@@ -2236,18 +2241,39 @@ app.post('/api/admin/promo-codes', h(async (req, res) => {
   if (!(pct > 0 && pct <= 100)) {
     return res.status(400).json({ error: 'Le pourcentage de réduction doit être compris entre 1 et 100.' });
   }
+  // Code personnel : réservé à un seul compte (récompense pour un consommateur actif dans
+  // les défis, ou un artiste) — on résout l'email en vrai ID utilisateur tout de suite,
+  // jamais stocké comme simple texte libre (garantit que le compte existe vraiment).
+  let assignedUserId = null;
+  if (assigned_to_email) {
+    const targetUser = await db.get('SELECT id, first_name, email FROM users WHERE LOWER(email) = LOWER($1)', [String(assigned_to_email).trim()]);
+    if (!targetUser) return res.status(404).json({ error: "Aucun compte NUNI n'existe avec cet email." });
+    assignedUserId = targetUser.id;
+  }
   try {
     await db.run(`
-      INSERT INTO promo_codes (code, discount_pct, applies_to_plan, max_uses, expires_at)
-      VALUES ($1,$2,$3,$4,$5)
+      INSERT INTO promo_codes (code, discount_pct, applies_to_plan, max_uses, expires_at, assigned_to_user_id, note)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
     `, [
       String(code).toUpperCase().trim(), pct, applies_to_plan || null,
-      Number(max_uses) || 1, expires_at || null,
+      Number(max_uses) || 1, expires_at || null, assignedUserId, note || null,
     ]);
   } catch (e) {
     return res.status(400).json({ error: 'Ce code existe déjà.' });
   }
-  res.json({ message: 'Code promo créé.' });
+  res.json({ message: assignedUserId ? 'Code promo personnel créé et attribué.' : 'Code promo créé.' });
+}));
+
+// ---------- Codes promo personnels — vus par l'utilisateur lui-même ----------
+app.get('/api/me/promo-codes', authMiddleware, h(async (req, res) => {
+  const rows = await db.query(
+    `SELECT code, discount_pct, applies_to_plan, expires_at, note FROM promo_codes
+     WHERE assigned_to_user_id = $1 AND active = 1 AND used_count < max_uses
+       AND (expires_at IS NULL OR expires_at > NOW())
+     ORDER BY id DESC`,
+    [req.user.id],
+  );
+  res.json({ codes: rows });
 }));
 
 app.post('/api/admin/promo-codes/toggle', h(async (req, res) => {
