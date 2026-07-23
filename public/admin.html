@@ -238,7 +238,7 @@
   </div>
 
 <script>
-  function getKey(){ const k = document.getElementById('key').value; localStorage.setItem('nuniAdminKey', k); return k; }
+  function getKey(){ const k = document.getElementById('key').value.trim(); localStorage.setItem('nuniAdminKey', k); return k; }
 
   document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.onclick = ()=>{
