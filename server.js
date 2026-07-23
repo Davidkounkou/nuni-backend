@@ -1813,6 +1813,22 @@ async function createNotification(userId, type, title, body, link) {
 }
 
 app.get('/api/notifications', authMiddleware, h(async (req, res) => {
+  // Rappel régulier pour consulter "Opportunités" — pas un vrai cron (aucun scheduler dans
+  // ce projet), mais un déclenchement naturel : à chaque fois que la personne consulte ses
+  // notifications, on vérifie si son dernier rappel Opportunités date de plus de 7 jours ;
+  // si oui, on en recrée un tout de suite. Résultat : un rappel qui revient vraiment
+  // régulièrement, sans jamais spammer (au plus un par semaine et par personne).
+  const lastReminder = await db.get(
+    "SELECT created_at FROM notifications WHERE user_id = $1 AND type = 'opportunites_reminder' ORDER BY created_at DESC LIMIT 1",
+    [req.user.id],
+  );
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  if (!lastReminder || new Date(lastReminder.created_at).getTime() < sevenDaysAgo) {
+    await createNotification(
+      req.user.id, 'opportunites_reminder', 'De nouvelles opportunités vous attendent',
+      "Sponsors, mises en avant, collaborations — jetez un œil à la section Opportunités, ça bouge régulièrement.", '/opportunites',
+    );
+  }
   const rows = await db.query(
     'SELECT id, type, title, body, link, is_read, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30',
     [req.user.id],
