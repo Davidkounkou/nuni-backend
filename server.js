@@ -868,6 +868,23 @@ app.get('/api/admin/debug-key-length', (req, res) => {
   });
 });
 
+// Compare la clé réellement envoyée par admin.html avec celle attendue par le serveur —
+// ne révèle jamais les valeurs en clair, seulement un résultat de comparaison et les
+// longueurs. À SUPPRIMER une fois le diagnostic terminé.
+app.get('/api/admin/debug-key-check', (req, res) => {
+  const provided = (req.headers['x-admin-key'] || '').trim();
+  const expected = (process.env.ADMIN_KEY || '').trim();
+  res.json({
+    match: provided === expected,
+    providedLength: provided.length,
+    expectedLength: expected.length,
+    providedFirstChar: provided.length ? provided[0] : null,
+    providedLastChar: provided.length ? provided[provided.length - 1] : null,
+    expectedFirstChar: expected.length ? expected[0] : null,
+    expectedLastChar: expected.length ? expected[expected.length - 1] : null,
+  });
+});
+
 // ================= SÉCURITÉ ANTI-TRICHE (étape 6 gamification) =================
 // Limiteur de débit léger en mémoire (sans dépendance externe) — identifie la personne par
 // son compte si connectée (même via un token décodé manuellement sur les routes publiques),
